@@ -1,6 +1,6 @@
 {
   "name": "@thomas-elliott/paperclip-plugin-matrix",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "description": "Connect a Paperclip instance to Matrix",
   "scripts": {
