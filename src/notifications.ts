@@ -1,76 +1,21 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
+import { approvalCreated, approvalDecided, updateInteractionMessages } from "./decisions.js";
 import { connect, errorMessage, sendNotice, type Matrix } from "./matrix.js";
-import { issueThread, rememberIssueThread } from "./threads.js";
-
-type Notice = { text: string; html: string };
+import { agentName, escapeHtml, issueLabel, notice, pageUrl, postAboutIssue, roomFor, transactionId, type Notice } from "./messages.js";
+import { issueThread } from "./threads.js";
 
 // Long run errors, such as stack traces, would bury the room; the full error is in Paperclip.
 const MAX_ERROR_LENGTH = 300;
 // Well under Matrix's 64 KiB limit on an event, and about a screenful.
 const MAX_COMMENT_LENGTH = 4000;
 
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
-function notice(summary: string, link: string | null): Notice {
-  return {
-    text: link ? `${summary}\n${link}` : summary,
-    html: link ? `${escapeHtml(summary)} <a href="${escapeHtml(link)}">Open in Paperclip</a>` : escapeHtml(summary),
-  };
-}
-
 function dollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
-// Paperclip's web pages live under the company's issue prefix, such as /ACME/issues/ACME-7.
-async function pageUrl(ctx: PluginContext, matrix: Matrix, companyId: string, path: string): Promise<string | null> {
-  if (!matrix.paperclipUrl) return null;
-  const company = await ctx.companies.get(companyId);
-  return company ? `${matrix.paperclipUrl}/${company.issuePrefix}/${path}` : null;
-}
-
-function issueLabel(issue: { identifier: string | null; title: string }): string {
-  return issue.identifier ? `${issue.identifier} ${issue.title}` : issue.title;
-}
-
-async function agentName(ctx: PluginContext, agentId: string | null | undefined, companyId: string): Promise<string | null> {
-  if (!agentId) return null;
-  return (await ctx.agents.get(agentId, companyId))?.name ?? null;
-}
-
-// A project's own room if the settings give it one, matched by project name or ID, otherwise the default room.
-async function roomFor(ctx: PluginContext, matrix: Matrix, companyId: string, projectId: string | null): Promise<string | null> {
-  if (projectId && matrix.projectRooms.length > 0) {
-    const project = await ctx.projects.get(projectId, companyId);
-    const names = [projectId.toLowerCase(), project?.name.toLowerCase()];
-    const match = matrix.projectRooms.find((entry) => names.includes(entry.project.toLowerCase()));
-    if (match) return match.room;
-  }
-  return matrix.defaultRoom;
-}
-
-// Using the event ID as the transaction ID means a redelivered event is not posted twice.
-const transactionId = (event: PluginEvent) => `paperclip-${event.eventId}`;
-
 async function post(ctx: PluginContext, matrix: Matrix, event: PluginEvent, projectId: string | null, message: Notice) {
   const room = await roomFor(ctx, matrix, event.companyId, projectId);
   if (room) await sendNotice(ctx, matrix, room, transactionId(event), message);
-}
-
-// Posts in the issue's thread. The first message about an issue starts its thread, in the room the
-// issue's project uses at that time; the thread stays in that room.
-async function postAboutIssue(ctx: PluginContext, matrix: Matrix, event: PluginEvent, issue: { id: string; projectId: string | null }, message: Notice) {
-  const thread = await issueThread(ctx, issue.id);
-  if (thread) {
-    await sendNotice(ctx, matrix, thread.roomId, transactionId(event), message, thread.eventId);
-    return;
-  }
-  const room = await roomFor(ctx, matrix, event.companyId, issue.projectId);
-  if (!room) return;
-  const root = await sendNotice(ctx, matrix, room, transactionId(event), message);
-  await rememberIssueThread(ctx, event.companyId, issue.id, root);
 }
 
 async function issueCreated(ctx: PluginContext, matrix: Matrix, event: PluginEvent) {
@@ -79,7 +24,7 @@ async function issueCreated(ctx: PluginContext, matrix: Matrix, event: PluginEve
   const agent = await agentName(ctx, issue.assigneeAgentId, event.companyId);
   const summary = `New issue: ${issueLabel(issue)}${agent ? `, assigned to ${agent}` : ""}`;
   const link = await pageUrl(ctx, matrix, event.companyId, `issues/${issue.identifier ?? issue.id}`);
-  await postAboutIssue(ctx, matrix, event, issue, notice(summary, link));
+  await postAboutIssue(ctx, matrix, event.companyId, issue, transactionId(event), notice(summary, link));
 }
 
 // issue.updated lists the fields that changed, with their old values under `_previous`. Only the
@@ -92,17 +37,7 @@ async function issueUpdated(ctx: PluginContext, matrix: Matrix, event: PluginEve
   const issue = event.entityId ? await ctx.issues.get(event.entityId, event.companyId) : null;
   if (!issue) return;
   const link = await pageUrl(ctx, matrix, event.companyId, `issues/${issue.identifier ?? issue.id}`);
-  await postAboutIssue(ctx, matrix, event, issue, notice(`Done: ${issueLabel(issue)}`, link));
-}
-
-async function approvalCreated(ctx: PluginContext, matrix: Matrix, event: PluginEvent) {
-  const approval = event.entityId ? await ctx.approvals.get(event.entityId, event.companyId) : null;
-  if (!approval) return;
-  const requester = await agentName(ctx, approval.requestedByAgentId, event.companyId);
-  // Approval types are snake_case keys such as hire_agent.
-  const summary = `Approval needed: ${approval.type.replaceAll("_", " ")}${requester ? `, requested by ${requester}` : ""}`;
-  const link = await pageUrl(ctx, matrix, event.companyId, `approvals/${approval.id}`);
-  await post(ctx, matrix, event, null, notice(summary, link));
+  await postAboutIssue(ctx, matrix, event.companyId, issue, transactionId(event), notice(`Done: ${issueLabel(issue)}`, link));
 }
 
 async function runFailed(ctx: PluginContext, matrix: Matrix, event: PluginEvent) {
@@ -114,8 +49,20 @@ async function runFailed(ctx: PluginContext, matrix: Matrix, event: PluginEvent)
   const link = payload.agentId && payload.runId
     ? await pageUrl(ctx, matrix, event.companyId, `agents/${payload.agentId}/runs/${payload.runId}`)
     : null;
-  if (issue) await postAboutIssue(ctx, matrix, event, issue, notice(summary, link));
-  else await post(ctx, matrix, event, null, notice(summary, link));
+  if (!issue) {
+    await post(ctx, matrix, event, null, notice(summary, link));
+    return;
+  }
+  await postAboutIssue(ctx, matrix, event.companyId, issue, transactionId(event), notice(summary, link));
+  await updateInteractionMessages(ctx, matrix, event.companyId, issue.id);
+}
+
+// Agents ask questions and request confirmations during their runs, and Paperclip sends no event
+// for that, so the plugin looks when a run on an issue ends. A person's answer in Paperclip wakes the
+// agent, so the next run's end also updates the message to show the answer.
+async function runFinished(ctx: PluginContext, matrix: Matrix, event: PluginEvent) {
+  const { issueId } = event.payload as { issueId?: string | null };
+  if (issueId) await updateInteractionMessages(ctx, matrix, event.companyId, issueId);
 }
 
 // Agents' comments go to the issue's thread, so a conversation started in Matrix can carry on
@@ -165,6 +112,8 @@ const handlers = {
   "issue.created": issueCreated,
   "issue.updated": issueUpdated,
   "approval.created": approvalCreated,
+  "approval.decided": approvalDecided,
+  "agent.run.finished": runFinished,
   "agent.run.failed": runFailed,
   "budget.incident.opened": budgetIncident,
   "issue.comment.created": commentCreated,

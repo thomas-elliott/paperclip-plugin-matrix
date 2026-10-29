@@ -24,9 +24,12 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.read",
     "agents.read",
     "approvals.read",
+    "approvals.respond",
     "issue.comments.read",
     "issue.comments.create",
     "issue.comments.create_human_attributed",
+    "issue.interactions.read",
+    "issue.interactions.respond",
     "ui.dashboardWidget.register",
   ],
   entrypoints: {

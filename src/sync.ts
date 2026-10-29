@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { handleReaction } from "./decisions.js";
 import { connect, errorMessage, NOT_CONFIGURED, request } from "./matrix.js";
 import { handleRoomEvent, type RoomEvent } from "./threads.js";
 
@@ -64,7 +65,8 @@ export function startSync(ctx: PluginContext, companyId: string) {
         for (const [roomId, room] of Object.entries(body.rooms?.join ?? {})) {
           for (const event of room.timeline?.events ?? []) {
             // One message that cannot be handled must not stop the loop reading later ones.
-            await handleRoomEvent(ctx, matrix, companyId, roomId, event).catch((error) => {
+            const handle = event.type === "m.reaction" ? handleReaction : handleRoomEvent;
+            await handle(ctx, matrix, companyId, roomId, event).catch((error) => {
               ctx.logger.warn("Could not handle a Matrix message", { companyId, roomId, eventId: event.event_id, error: errorMessage(error) });
             });
           }

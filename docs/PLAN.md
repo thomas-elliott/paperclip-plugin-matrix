@@ -86,11 +86,29 @@ Other things learned:
   account can use the code. A settings table could not work: Paperclip identifies members only by
   an opaque user ID.
 
+## Milestone 2: approvals and questions
+
+- Approvals go to the default room. The bot adds tick and cross reactions to its message; a linked
+  person clicking one calls `ctx.approvals.decide` as their Paperclip user. On `approval.decided`
+  the bot edits the message to show the outcome and who decided, whether in Matrix or in
+  Paperclip's web page.
+- Paperclip refuses decisions from anyone who is not an active, non-viewer member. The bot posts
+  the reason in the room. Reactions from unlinked people and other emoji are ignored silently.
+- Paperclip gives plugins no people's names, so a decider is shown by their linked Matrix ID, or
+  as "in Paperclip".
+- Agents' requests ("interactions"): Paperclip sends no event when one is created, so the plugin
+  calls `listInteractions` when an agent's run on an issue ends (`agent.run.finished` or
+  `agent.run.failed`). Pending requests go in the issue's thread. At a later run's end, messages
+  of requests answered since are edited to show the outcome.
+- `respondInteraction` can only accept or reject, and Paperclip refuses both for
+  `ask_user_questions`. So questions are posted with numbered options and answered by replying in
+  the thread: the reply becomes a comment, which wakes the agent, and closes the question card if
+  the agent set `supersedeOnUserComment`. Only `request_confirmation` gets tick and cross
+  reactions; other kinds say "Answer in Paperclip". A reaction cannot give a reason, so
+  confirmations that require one for rejecting are refused, with the reason posted.
+
 ## Later
 
-3. Approvals and questions: approve or reject with a tick or cross reaction, or a typed command.
-   The bot edits the original message to show the decision. Matrix polls for multiple-choice
-   questions.
 4. Commands: `!clip status`, `issues`, `agents`, `approve`, `new`, or the same after mentioning
    the bot.
 5. Talking to agents: a mention or direct message starts a thread that becomes an issue. Progress

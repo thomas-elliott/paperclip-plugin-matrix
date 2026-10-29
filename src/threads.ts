@@ -8,7 +8,7 @@ export type RoomEvent = {
   type: string;
   sender: string;
   event_id: string;
-  content: { msgtype?: string; body?: string; "m.relates_to"?: { rel_type?: string; event_id?: string } };
+  content: { msgtype?: string; body?: string; "m.relates_to"?: { rel_type?: string; event_id?: string; key?: string } };
 };
 
 const threadKey = (issueId: string) => ({ scopeKind: "issue", scopeId: issueId, stateKey: "matrixThread" }) as const;

@@ -104,8 +104,21 @@ export async function sendNotice(
   });
 }
 
+// Replaces a notice's text. Clients show the new text in place of the old, marked as edited; the body
+// outside `m.new_content` is what clients without edits show, starred by convention.
+export async function editNotice(ctx: PluginContext, matrix: Matrix, original: SentEvent, txnId: string, message: { text: string; html: string }) {
+  const content = { msgtype: "m.notice", body: message.text, format: "org.matrix.custom.html", formatted_body: message.html };
+  await sendEvent(ctx, matrix, original.roomId, "m.room.message", txnId, {
+    ...content,
+    body: `* ${message.text}`,
+    formatted_body: `* ${message.html}`,
+    "m.new_content": content,
+    "m.relates_to": { rel_type: "m.replace", event_id: original.eventId },
+  });
+}
+
 export async function sendReaction(ctx: PluginContext, matrix: Matrix, roomId: string, eventId: string, key: string): Promise<void> {
-  await sendEvent(ctx, matrix, roomId, "m.reaction", `reaction-${eventId}`, {
+  await sendEvent(ctx, matrix, roomId, "m.reaction", `reaction-${eventId}-${key}`, {
     "m.relates_to": { rel_type: "m.annotation", event_id: eventId, key },
   });
 }
