@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import type { EnvSecretRefBinding, PluginContext } from "@paperclipai/plugin-sdk";
 
 export const NOT_CONFIGURED = "Set the homeserver address and access token in the plugin settings.";
@@ -39,21 +40,33 @@ export async function connect(ctx: PluginContext, companyId: string): Promise<Ma
 
 type RequestOptions = { method?: string; body?: unknown };
 
+// Homeservers limit how fast an account may send, and say how long to wait before trying again.
+// A longer wait than this fails the request instead of holding up everything behind it.
+const MAX_RATE_LIMIT_WAIT_MS = 10_000;
+const MAX_ATTEMPTS = 3;
+
 // Calls the Matrix client-server API and returns the parsed JSON body. Matrix reports errors as
 // JSON with `errcode` and `error`, so those become the thrown message.
 export async function request<T>(ctx: PluginContext, matrix: Matrix, path: string, options: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json", Authorization: `Bearer ${matrix.token}` };
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
-  const response = await ctx.http.fetch(`${matrix.homeserverUrl}/_matrix/client/v3${path}`, {
-    method: options.method ?? "GET",
-    headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-  });
-  const body = (await response.json().catch(() => ({}))) as T & { errcode?: string; error?: string };
-  if (!response.ok) {
-    throw new Error(`Matrix answered HTTP ${response.status}${body.errcode ? `: ${body.errcode} ${body.error ?? ""}` : ""}`);
+  for (let attempt = 1; ; attempt += 1) {
+    const response = await ctx.http.fetch(`${matrix.homeserverUrl}/_matrix/client/v3${path}`, {
+      method: options.method ?? "GET",
+      headers,
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    });
+    const body = (await response.json().catch(() => ({}))) as T & { errcode?: string; error?: string; retry_after_ms?: number };
+    const wait = body.retry_after_ms ?? 1000;
+    if (response.status === 429 && attempt < MAX_ATTEMPTS && wait <= MAX_RATE_LIMIT_WAIT_MS) {
+      await sleep(wait);
+      continue;
+    }
+    if (!response.ok) {
+      throw new Error(`Matrix answered HTTP ${response.status}${body.errcode ? `: ${body.errcode} ${body.error ?? ""}` : ""}`);
+    }
+    return body;
   }
-  return body;
 }
 
 // Messages are sent to room IDs; an alias is looked up in the room directory first.

@@ -1,8 +1,8 @@
-import type { Agent, PluginContext, Project } from "@paperclipai/plugin-sdk";
+import type { Agent, Issue, PluginContext, Project } from "@paperclipai/plugin-sdk";
 import { COMMAND, handleCommand } from "./commands.js";
 import { completeLink, LINK_COMMAND, linkedUser } from "./links.js";
 import manifest from "./manifest.js";
-import { joinRoom, sendNotice, sendReaction, type Bot, type Matrix } from "./matrix.js";
+import { errorMessage, joinRoom, sendNotice, sendReaction, type Bot, type Matrix } from "./matrix.js";
 import { issueLabel, issueOfThread, notice, pageUrl, rememberIssueThread } from "./messages.js";
 import { projectOfRoom } from "./project-rooms.js";
 
@@ -30,14 +30,21 @@ export type RoomEvent = {
 // The state events an invite carries. The bot's own membership event says who invited it.
 export type InviteEvent = { type: string; sender: string; state_key?: string; content: { membership?: string; is_direct?: boolean } };
 
+// Paperclip refuses to give work to agents in these states.
+const UNASSIGNABLE_STATUSES = new Set(["terminated", "pending_approval"]);
+
 const directRoomKey = (companyId: string, roomId: string) =>
   ({ scopeKind: "company", scopeId: companyId, namespace: "direct-rooms", stateKey: roomId }) as const;
+const copiedReplyKey = (companyId: string, eventId: string) =>
+  ({ scopeKind: "company", scopeId: companyId, namespace: "copied-replies", stateKey: eventId }) as const;
 
 // Handles one message someone sent in a room the bot is in: a link code, a command, a reply in an
 // issue thread, or a request for work. Only linked people's replies and requests count; everything else is ignored.
 export async function handleRoomEvent(ctx: PluginContext, matrix: Matrix, bot: Bot, companyId: string, roomId: string, event: RoomEvent) {
   // Only typed text; the bot's own messages are notices, so this also skips them.
   if (event.type !== "m.room.message" || event.content.msgtype !== "m.text" || !event.content.body) return;
+  // An edit arrives as a new message, "* " and the corrected text. The original was already handled.
+  if (event.content["m.relates_to"]?.rel_type === "m.replace") return;
   const body = event.content.body.trim();
 
   const linkCode = LINK_COMMAND.exec(body)?.[1];
@@ -67,8 +74,11 @@ async function copyReply(ctx: PluginContext, matrix: Matrix, companyId: string, 
   if (!issueId) return;
   const userId = await linkedUser(ctx, companyId, event.sender);
   if (!userId) return;
+  // The sync loop reads a message again if the plugin stops before saving its position.
+  if (await ctx.state.get(copiedReplyKey(companyId, event.event_id))) return;
 
   await ctx.issues.createComment(issueId, body, companyId, { actorUserId: userId });
+  await ctx.state.set(copiedReplyKey(companyId, event.event_id), issueId);
   await sendReaction(ctx, matrix, roomId, event.event_id, "✅");
 }
 
@@ -113,10 +123,11 @@ function mentionsAgent(text: string, urlKey: string): boolean {
 
 // An agent the request mentions, otherwise the project's lead agent, otherwise the default agent.
 async function chooseAgent(ctx: PluginContext, matrix: Matrix, companyId: string, project: Project | null, request: string): Promise<Agent | null> {
-  const agents = (await ctx.agents.list({ companyId })).filter((agent) => agent.status !== "terminated");
+  const agents = (await ctx.agents.list({ companyId })).filter((agent) => !UNASSIGNABLE_STATUSES.has(agent.status));
   const mentioned = agents.find((agent) => mentionsAgent(request, agent.urlKey));
   if (mentioned) return mentioned;
-  if (project?.leadAgentId) return agents.find((agent) => agent.id === project.leadAgentId) ?? null;
+  const lead = agents.find((agent) => agent.id === project?.leadAgentId);
+  if (lead) return lead;
   const wanted = matrix.defaultAgent?.toLowerCase();
   return agents.find((agent) => agent.urlKey.toLowerCase() === wanted || agent.name.toLowerCase() === wanted) ?? null;
 }
@@ -140,17 +151,25 @@ async function startWork(ctx: PluginContext, matrix: Matrix, bot: Bot, companyId
     return;
   }
 
-  const issue = await ctx.issues.create({
-    companyId,
-    projectId: project?.id,
-    title: titleOf(request),
-    description: request,
-    status: "todo",
-    assigneeAgentId: agent.id,
-    originKind: MESSAGE_ORIGIN,
-    originId: event.event_id,
-    actor: { actorUserId: userId },
-  });
+  let issue: Issue;
+  try {
+    issue = await ctx.issues.create({
+      companyId,
+      projectId: project?.id,
+      title: titleOf(request),
+      description: request,
+      status: "todo",
+      assigneeAgentId: agent.id,
+      originKind: MESSAGE_ORIGIN,
+      originId: event.event_id,
+      actor: { actorUserId: userId },
+    });
+  } catch (error) {
+    // Paperclip checks more than the plugin can, such as the agent's reporting line.
+    const reason = `Could not create the issue: ${errorMessage(error)}`;
+    await sendNotice(ctx, matrix, roomId, `not-created-${event.event_id}`, notice(reason, null), event.event_id);
+    return;
+  }
   await rememberIssueThread(ctx, companyId, issue.id, { roomId, eventId: event.event_id });
   await sendReaction(ctx, matrix, roomId, event.event_id, "✅");
   // Replaces the usual "New issue" message, which is not posted for these issues.

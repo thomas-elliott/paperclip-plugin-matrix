@@ -36,7 +36,7 @@ const issue = {
 const issueEvent = { companyId: COMPANY, entityType: "issue", entityId: "issue-1" };
 
 // Starts the plugin as Paperclip does after the settings are saved, and waits for its sync loop's first sync.
-async function setUp(settings: Record<string, unknown> = config) {
+async function setUp(settings: Record<string, unknown> = config, beforeStart?: (harness: TestHarness) => void) {
   const homeserver = new FakeHomeserver().install();
   const harness = createTestHarness({ manifest, config: settings });
   harness.seed({
@@ -56,6 +56,7 @@ async function setUp(settings: Record<string, unknown> = config) {
     { projectId: "project-1", roomId: WEBSITE_ROOM },
     { companyId: COMPANY, actor: { type: "user", userId: "user-alice", companyId: COMPANY } },
   );
+  beforeStart?.(harness);
   await plugin.definition.onConfigChanged?.(settings, { companyId: COMPANY });
   await homeserver.read();
   return { harness, homeserver };
@@ -70,6 +71,12 @@ function message(sender: string, body: string, threadRoot?: string) {
     event_id: `$incoming-${nextEvent}`,
     content: { msgtype: "m.text", body, ...(threadRoot ? { "m.relates_to": { rel_type: "m.thread", event_id: threadRoot } } : {}) },
   };
+}
+
+// An edit, as Element sends it: a new message whose text is starred and which replaces the original.
+function edit(original: { sender: string; event_id: string }, body: string) {
+  const event = message(original.sender, `* ${body}`);
+  return { ...event, content: { ...event.content, "m.new_content": { msgtype: "m.text", body }, "m.relates_to": { rel_type: "m.replace", event_id: original.event_id } } };
 }
 
 // A message that mentions the bot, as Element sends it: the display name starts the text.
@@ -132,6 +139,27 @@ describe("issue threads", () => {
     expect(done.content["m.relates_to"]).toBeUndefined();
     expect(failed.content["m.relates_to"]).toMatchObject({ rel_type: "m.thread", event_id: done.eventId });
   });
+
+  it("starts one thread when two messages about a new issue are posted at once", async () => {
+    const { harness, homeserver } = await setUp();
+
+    await Promise.all([
+      harness.emit("issue.created", {}, issueEvent),
+      harness.emit("agent.run.failed", { runId: "run-1", agentId: "agent-1", issueId: "issue-1", error: "boom" }, { companyId: COMPANY, entityType: "heartbeat_run", entityId: "run-1" }),
+    ]);
+
+    const [first, second] = homeserver.messageEventsIn(ROOM);
+    expect(second.content["m.relates_to"]).toMatchObject({ rel_type: "m.thread", event_id: first.eventId });
+  });
+
+  it("retries a message the homeserver refused as over its rate limit", async () => {
+    const { harness, homeserver } = await setUp();
+    homeserver.rateLimitSends = 1;
+
+    await harness.emit("issue.created", {}, issueEvent);
+
+    expect(homeserver.messagesIn(ROOM)).toHaveLength(1);
+  });
 });
 
 describe("replies", () => {
@@ -148,6 +176,33 @@ describe("replies", () => {
     expect(comments).toEqual([expect.objectContaining({ body: "The login page also breaks on Safari", authorUserId: "user-alice" })]);
     // The bot reacts so people in the room can see the reply reached Paperclip.
     expect(homeserver.reactions()).toContainEqual(expect.objectContaining({ rel_type: "m.annotation", event_id: reply.event_id }));
+  });
+
+  it("copies a reply once when it reads it twice", async () => {
+    const { harness, homeserver } = await setUp();
+    await linkAlice(harness, homeserver);
+    const root = await createIssueThread(harness, homeserver);
+    const reply = message(ALICE, "The login page also breaks on Safari", root);
+
+    homeserver.deliver(ROOM, reply);
+    homeserver.deliver(ROOM, reply);
+    await homeserver.read();
+
+    expect(await harness.ctx.issues.listComments("issue-1", COMPANY)).toHaveLength(1);
+  });
+
+  it("does not copy an edit to a reply as another comment", async () => {
+    const { harness, homeserver } = await setUp();
+    await linkAlice(harness, homeserver);
+    const root = await createIssueThread(harness, homeserver);
+    const reply = message(ALICE, "The login page also breaks on Safar", root);
+
+    homeserver.deliver(ROOM, reply);
+    homeserver.deliver(ROOM, edit(reply, "The login page also breaks on Safari"));
+    await homeserver.read();
+
+    expect(await harness.ctx.issues.listComments("issue-1", COMPANY)).toHaveLength(1);
+    expect(await requestedIssues(harness)).toHaveLength(0);
   });
 
   it("ignores replies from Matrix users who have not linked an account", async () => {
@@ -341,6 +396,43 @@ describe("starting work", () => {
     expect(await requestedIssues(harness)).toEqual([expect.objectContaining({ assigneeAgentId: "agent-3" })]);
   });
 
+  it("gives the work to the default agent when the project's lead agent has been terminated", async () => {
+    const { harness, homeserver } = await setUp();
+    harness.seed({ agents: [{ id: "agent-2", companyId: COMPANY, name: "Designer", urlKey: "designer", status: "terminated" } as Agent] });
+    await linkAlice(harness, homeserver);
+
+    homeserver.deliver(WEBSITE_ROOM, mention(ALICE, "Make the header smaller"));
+    await homeserver.read();
+
+    expect(await requestedIssues(harness)).toEqual([expect.objectContaining({ assigneeAgentId: "agent-1" })]);
+  });
+
+  it("does not give work to an agent waiting for approval, which Paperclip would refuse", async () => {
+    const { harness, homeserver } = await setUp();
+    harness.seed({ agents: [{ id: "agent-1", companyId: COMPANY, name: "Builder", urlKey: "builder", status: "pending_approval" } as Agent] });
+    await linkAlice(harness, homeserver);
+
+    homeserver.deliver(ROOM, mention(ALICE, "Fix the signup form"));
+    await homeserver.read();
+
+    expect(await requestedIssues(harness)).toHaveLength(0);
+    expect(homeserver.messagesIn(ROOM)[0].body).toContain("No agent");
+  });
+
+  it("says so in the thread when Paperclip will not create the issue", async () => {
+    const { harness, homeserver } = await setUp();
+    await linkAlice(harness, homeserver);
+    vi.spyOn(harness.ctx.issues, "create").mockRejectedValueOnce(new Error("Cannot assign work to agents with an invalid org chain"));
+    const request = mention(ALICE, "Fix the signup form");
+
+    homeserver.deliver(ROOM, request);
+    await homeserver.read();
+
+    const [reason] = homeserver.messagesIn(ROOM);
+    expect(reason.body).toContain("invalid org chain");
+    expect(reason["m.relates_to"]).toMatchObject({ rel_type: "m.thread", event_id: request.event_id });
+  });
+
   it("explains, and creates nothing, when no agent can be chosen", async () => {
     const { harness, homeserver } = await setUp({ ...config, defaultAgent: undefined });
     await linkAlice(harness, homeserver);
@@ -395,6 +487,20 @@ describe("direct messages", () => {
 
     expect(homeserver.joined).toContain("!alice-dm");
     expect(await requestedIssues(harness)).toEqual([expect.objectContaining({ title: "Fix the signup form", assigneeAgentId: "agent-1" })]);
+  });
+
+  it("does not treat an edit to a request as another request", async () => {
+    const { harness, homeserver } = await setUp();
+    await linkAlice(harness, homeserver);
+    homeserver.invite("!alice-dm", ALICE, true);
+    await homeserver.read();
+    const request = message(ALICE, "Fix the sigup form");
+
+    homeserver.deliver("!alice-dm", request);
+    homeserver.deliver("!alice-dm", edit(request, "Fix the signup form"));
+    await homeserver.read();
+
+    expect(await requestedIssues(harness)).toHaveLength(1);
   });
 
   it("ignores invites from people who have not linked an account", async () => {
@@ -472,5 +578,52 @@ describe("commands", () => {
     await homeserver.read();
 
     expect(homeserver.messagesIn(ROOM)).toHaveLength(0);
+  });
+});
+
+describe("reading rooms", () => {
+  it("handles a batch once when the settings are saved while the plugin is part-way through it", async () => {
+    const { harness, homeserver } = await setUp();
+    await linkAlice(harness, homeserver);
+    const root = await createIssueThread(harness, homeserver);
+    const createComment = harness.ctx.issues.createComment.bind(harness.ctx.issues);
+    // The first comment is written by the loop the save replaces, after the new loop has had time
+    // to read the same batch if it does not wait for this one.
+    let replacedLoopDone: Promise<unknown> | null = null;
+    vi.spyOn(harness.ctx.issues, "createComment").mockImplementation(async (...args) => {
+      if (replacedLoopDone) return createComment(...args);
+      replacedLoopDone = (async () => {
+        await plugin.definition.onConfigChanged?.(config, { companyId: COMPANY });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return createComment(...args);
+      })();
+      return replacedLoopDone as ReturnType<typeof createComment>;
+    });
+
+    homeserver.deliver(ROOM, message(ALICE, "The login page also breaks on Safari", root));
+    await vi.waitFor(() => expect(replacedLoopDone).not.toBeNull());
+    await replacedLoopDone;
+    await homeserver.read();
+
+    expect(await harness.ctx.issues.listComments("issue-1", COMPANY)).toHaveLength(1);
+  });
+
+  it("starts from now rather than an old position when the bot's account changes", async () => {
+    const { homeserver } = await setUp();
+    homeserver.userId = "@other-bot:example.com";
+    homeserver.syncedFrom = [];
+
+    await plugin.definition.onConfigChanged?.(config, { companyId: COMPANY });
+
+    // A first sync asks from no position.
+    await vi.waitFor(() => expect(homeserver.syncedFrom).toContain(null));
+  });
+
+  it("still reads rooms when the access token cannot be resolved while joining the default room", async () => {
+    const { homeserver } = await setUp(config, (harness) => {
+      vi.spyOn(harness.ctx.secrets, "resolve").mockRejectedValueOnce(new Error("Secret not found"));
+    });
+
+    expect(homeserver.syncedFrom.length).toBeGreaterThan(0);
   });
 });

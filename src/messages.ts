@@ -77,10 +77,32 @@ export async function roomFor(ctx: PluginContext, matrix: Matrix, projectId: str
 // Using the event ID as the transaction ID means a redelivered event is not posted twice.
 export const transactionId = (event: PluginEvent) => `paperclip-${event.eventId}`;
 
+// Each issue's posts in progress, so they go out one at a time. Two first posts about an issue
+// arriving together would otherwise each start a thread.
+const postsInProgress = new Map<string, Promise<void>>();
+
 // Posts in the issue's thread. The first message about an issue starts its thread, in the room the
 // issue's project uses at that time; the thread stays in that room. Returns the message posted, or
 // null when there is no room to post in.
-export async function postAboutIssue(
+export function postAboutIssue(
+  ctx: PluginContext,
+  matrix: Matrix,
+  companyId: string,
+  issue: { id: string; projectId: string | null },
+  txnId: string,
+  message: Notice,
+): Promise<SentEvent | null> {
+  const earlier = postsInProgress.get(issue.id) ?? Promise.resolve();
+  const post = earlier.then(() => postInThread(ctx, matrix, companyId, issue, txnId, message));
+  const settled = post.then(() => {}, () => {});
+  postsInProgress.set(issue.id, settled);
+  void settled.then(() => {
+    if (postsInProgress.get(issue.id) === settled) postsInProgress.delete(issue.id);
+  });
+  return post;
+}
+
+async function postInThread(
   ctx: PluginContext,
   matrix: Matrix,
   companyId: string,

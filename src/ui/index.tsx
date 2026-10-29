@@ -161,7 +161,8 @@ export function DashboardWidget({ context }: PluginWidgetProps) {
         pairs={[
           { label: "Status", value: <StatusBadge status="ok" label="Connected" /> },
           { label: "Signed in as", value: data.userId },
-          { label: "Reading rooms", value: data.sync?.running ? "Yes" : (data.sync?.lastError ?? "No") },
+          // The loop keeps running while it retries a failing sync, so its error comes first.
+          { label: "Reading rooms", value: data.sync?.lastError ?? (data.sync?.running ? "Yes" : "No") },
         ]}
       />
       {context.companyId && <MatrixAccount companyId={context.companyId} />}
