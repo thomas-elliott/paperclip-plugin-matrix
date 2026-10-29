@@ -1,5 +1,6 @@
 import type { Agent, Issue, PluginContext, Project } from "@paperclipai/plugin-sdk";
 import { COMMAND, handleCommand } from "./commands.js";
+import { sayCannotRead, sayIfCannotRead } from "./encryption.js";
 import { completeLink, LINK_COMMAND, linkedUser } from "./links.js";
 import manifest from "./manifest.js";
 import { errorMessage, joinRoom, sendNotice, sendReaction, type Bot, type Matrix } from "./matrix.js";
@@ -41,6 +42,11 @@ const copiedReplyKey = (companyId: string, eventId: string) =>
 // Handles one message someone sent in a room the bot is in: a link code, a command, a reply in an
 // issue thread, or a request for work. Only linked people's replies and requests count; everything else is ignored.
 export async function handleRoomEvent(ctx: PluginContext, matrix: Matrix, bot: Bot, companyId: string, roomId: string, event: RoomEvent) {
+  // An encrypted message, or encryption being turned on: the bot will hear nothing more here.
+  if (event.type === "m.room.encrypted" || event.type === "m.room.encryption") {
+    await sayCannotRead(ctx, matrix, companyId, roomId);
+    return;
+  }
   // Only typed text; the bot's own messages are notices, so this also skips them.
   if (event.type !== "m.room.message" || event.content.msgtype !== "m.text" || !event.content.body) return;
   // An edit arrives as a new message, "* " and the corrected text. The original was already handled.
@@ -98,6 +104,8 @@ export async function handleInvite(ctx: PluginContext, matrix: Matrix, bot: Bot,
   if (invite?.content.membership !== "invite" || !(await linkedUser(ctx, companyId, invite.sender))) return;
   await joinRoom(ctx, matrix, roomId);
   if (invite.content.is_direct) await ctx.state.set(directRoomKey(companyId, roomId), true);
+  // Element encrypts direct messages unless told not to.
+  await sayIfCannotRead(ctx, matrix, companyId, roomId);
 }
 
 // Clients start a message that mentions someone with their display name, or their Matrix ID when

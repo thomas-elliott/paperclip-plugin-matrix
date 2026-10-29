@@ -20,6 +20,8 @@ export class FakeHomeserver {
   aliases = new Map<string, string>();
   // Room names (m.room.name state), room ID to name.
   roomNames = new Map<string, string>();
+  // Rooms with encryption turned on (m.room.encryption state).
+  encryptedRooms = new Set<string>();
   // The account the access token belongs to.
   userId = BOT_USER;
   // How many of the next sends to refuse as over the rate limit.
@@ -82,6 +84,9 @@ export class FakeHomeserver {
     if (method === "GET" && segments[0] === "rooms" && segments[2] === "state" && segments[3] === "m.room.name") {
       const name = this.roomNames.get(segments[1]);
       return name ? Response.json({ name }) : notFound("Event not found");
+    }
+    if (method === "GET" && segments[0] === "rooms" && segments[2] === "state" && segments[3] === "m.room.encryption") {
+      return this.encryptedRooms.has(segments[1]) ? Response.json({ algorithm: "m.megolm.v1.aes-sha2" }) : notFound("Event not found");
     }
     if (method === "GET" && path === "/sync") return this.sync(new URL(url).searchParams.get("since"));
 

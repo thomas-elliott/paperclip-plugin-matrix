@@ -627,3 +627,57 @@ describe("reading rooms", () => {
     expect(homeserver.syncedFrom.length).toBeGreaterThan(0);
   });
 });
+
+describe("encrypted rooms", () => {
+  // A message Element sends in an encrypted room. The bot has no keys to read it.
+  function encrypted(sender: string) {
+    nextEvent += 1;
+    return { type: "m.room.encrypted", sender, event_id: `$incoming-${nextEvent}`, content: { algorithm: "m.megolm.v1.aes-sha2", ciphertext: "…" } };
+  }
+  const cannotRead = expect.objectContaining({ msgtype: "m.notice", body: expect.stringContaining("cannot read encrypted messages") });
+
+  it("says once that it cannot read an encrypted direct message room it joins", async () => {
+    const { harness, homeserver } = await setUp();
+    await linkAlice(harness, homeserver);
+    homeserver.encryptedRooms.add("!alice-dm");
+
+    homeserver.invite("!alice-dm", ALICE, true);
+    homeserver.deliver("!alice-dm", encrypted(ALICE));
+    await homeserver.read();
+
+    expect(homeserver.messagesIn("!alice-dm")).toEqual([cannotRead]);
+  });
+
+  it("says once that it cannot read a room where encrypted messages arrive", async () => {
+    const { homeserver } = await setUp();
+
+    homeserver.deliver(ROOM, encrypted(ALICE));
+    homeserver.deliver(ROOM, encrypted(MALLORY));
+    await homeserver.read();
+
+    expect(homeserver.messagesIn(ROOM)).toEqual([cannotRead]);
+  });
+
+  it("says it cannot read the default room when that room is encrypted", async () => {
+    const { homeserver } = await setUp();
+    homeserver.encryptedRooms.add(ROOM);
+
+    await plugin.definition.onConfigChanged?.(config, { companyId: COMPANY });
+
+    expect(homeserver.messagesIn(ROOM)).toEqual([cannotRead]);
+  });
+
+  it("says it cannot read a project's room when that room is encrypted", async () => {
+    const { harness, homeserver } = await setUp();
+    homeserver.encryptedRooms.add("!secret");
+
+    await harness.performAction(
+      "setProjectRoom",
+      { projectId: "project-1", roomId: "!secret" },
+      { companyId: COMPANY, actor: { type: "user", userId: "user-alice", companyId: COMPANY } },
+    );
+
+    expect(homeserver.messagesIn("!secret")).toEqual([cannotRead]);
+    expect(homeserver.messagesIn(WEBSITE_ROOM)).toHaveLength(0);
+  });
+});

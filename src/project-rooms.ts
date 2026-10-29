@@ -1,4 +1,5 @@
 import type { PluginContext, Project } from "@paperclipai/plugin-sdk";
+import { sayIfCannotRead } from "./encryption.js";
 import { connect, NOT_CONFIGURED, request, type Matrix } from "./matrix.js";
 
 // A project can have its own room, picked in the project's Matrix tab from the rooms the bot is in.
@@ -18,8 +19,13 @@ export async function projectRoom(ctx: PluginContext, projectId: string): Promis
 
 export async function setProjectRoom(ctx: PluginContext, companyId: string, projectId: string, roomId: string | null) {
   if (!(await ctx.projects.get(projectId, companyId))) throw new Error("No such project.");
-  if (roomId) await ctx.state.set(projectRoomKey(projectId), roomId);
-  else await ctx.state.delete(projectRoomKey(projectId));
+  if (!roomId) {
+    await ctx.state.delete(projectRoomKey(projectId));
+    return;
+  }
+  await ctx.state.set(projectRoomKey(projectId), roomId);
+  const matrix = await connect(ctx, companyId);
+  if (matrix) await sayIfCannotRead(ctx, matrix, companyId, roomId);
 }
 
 // The project whose room this is, or null. Two projects given the same room share it; the first wins.

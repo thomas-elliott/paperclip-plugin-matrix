@@ -1,4 +1,5 @@
 import { definePlugin, runWorker, type PluginContext, type PluginPerformActionContext } from "@paperclipai/plugin-sdk";
+import { sayIfCannotRead } from "./encryption.js";
 import { connect, errorMessage, joinRoom, NOT_CONFIGURED, request } from "./matrix.js";
 import { linkedMatrixUser, startLink, unlinkUser } from "./links.js";
 import { projectRoomChoices, setProjectRoom } from "./project-rooms.js";
@@ -9,14 +10,17 @@ export type ConnectionStatus =
   | { connected: true; userId: string; sync: SyncStatus | null }
   | { connected: false; reason: string };
 
-// The bot can only post in rooms it has joined. Joining a room it is already in does nothing. A
-// failure, such as a room the bot was not invited to or a token that cannot be read, is logged and
-// must not stop the sync loop starting: the loop retries, and shows its error on the dashboard.
+// The bot can only post in rooms it has joined, and says so there if the room is encrypted. Joining a
+// room it is already in does nothing. A failure, such as a room the bot was not invited to or a token
+// that cannot be read, is logged and must not stop the sync loop starting: the loop retries, and
+// shows its error on the dashboard.
 // Project rooms need no join: they are picked from the rooms the bot is already in.
 async function joinDefaultRoom(ctx: PluginContext, companyId: string) {
   try {
     const matrix = await connect(ctx, companyId);
-    if (matrix?.defaultRoom) await joinRoom(ctx, matrix, matrix.defaultRoom);
+    if (!matrix?.defaultRoom) return;
+    await joinRoom(ctx, matrix, matrix.defaultRoom);
+    await sayIfCannotRead(ctx, matrix, companyId, matrix.defaultRoom);
   } catch (error) {
     ctx.logger.warn("Could not join the default Matrix room", { companyId, error: errorMessage(error) });
   }

@@ -70,7 +70,7 @@ export async function request<T>(ctx: PluginContext, matrix: Matrix, path: strin
 }
 
 // Messages are sent to room IDs; an alias is looked up in the room directory first.
-async function roomIdOf(ctx: PluginContext, matrix: Matrix, room: string): Promise<string> {
+export async function roomIdOf(ctx: PluginContext, matrix: Matrix, room: string): Promise<string> {
   if (!room.startsWith("#")) return room;
   const { room_id } = await request<{ room_id: string }>(ctx, matrix, `/directory/room/${encodeURIComponent(room)}`);
   return room_id;
