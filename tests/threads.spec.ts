@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Company, Issue } from "@paperclipai/plugin-sdk";
+import type { Agent, Company, Issue, IssueComment } from "@paperclipai/plugin-sdk";
 import { createTestHarness, type TestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
@@ -31,9 +31,13 @@ const issueEvent = { companyId: COMPANY, entityType: "issue", entityId: "issue-1
 // Starts the plugin as Paperclip does after the settings are saved, and waits for its sync loop's first sync.
 async function setUp() {
   const homeserver = new FakeHomeserver().install();
-  // The tests read comments back; the plugin itself never needs to.
-  const harness = createTestHarness({ manifest, config, capabilities: [...manifest.capabilities, "issue.comments.read"] });
-  harness.seed({ companies: [{ id: COMPANY, name: "Acme", issuePrefix: "ACME" } as Company], issues: [issue], accessMembers: [member("user-alice")] });
+  const harness = createTestHarness({ manifest, config });
+  harness.seed({
+    companies: [{ id: COMPANY, name: "Acme", issuePrefix: "ACME" } as Company],
+    issues: [issue],
+    agents: [{ id: "agent-1", companyId: COMPANY, name: "Builder" } as Agent],
+    accessMembers: [member("user-alice")],
+  });
   await plugin.definition.setup(harness.ctx);
   await plugin.definition.onConfigChanged?.(config, { companyId: COMPANY });
   await homeserver.read();
@@ -192,5 +196,46 @@ describe("linking accounts", () => {
 
     expect(await linkStatus(harness)).toMatchObject({ matrixUserId: null });
     expect(await harness.ctx.issues.listComments("issue-1", COMPANY)).toHaveLength(0);
+  });
+});
+
+describe("agent comments", () => {
+  // Paperclip's comment event carries only the first 120 characters, so the plugin reads the comment.
+  const longBody = `I found the cause.\n\n${"The session cookie expires too early. ".repeat(6)}`;
+  const comment = (fields: Partial<IssueComment>) =>
+    ({ id: "comment-1", companyId: COMPANY, issueId: "issue-1", body: longBody, authorAgentId: "agent-1", authorUserId: null, ...fields }) as IssueComment;
+  const commentEvent = (actorType: "agent" | "user" | "plugin") => ({ ...issueEvent, actorType, actorId: "someone" });
+
+  it("posts an agent's comment in full in the issue's thread", async () => {
+    const { harness, homeserver } = await setUp();
+    const root = await createIssueThread(harness, homeserver);
+    harness.seed({ issueComments: [comment({})] });
+
+    await harness.emit("issue.comment.created", { commentId: "comment-1", bodySnippet: longBody.slice(0, 120) }, commentEvent("agent"));
+
+    const [, posted] = homeserver.messagesIn(ROOM);
+    expect(posted["m.relates_to"]).toMatchObject({ rel_type: "m.thread", event_id: root });
+    expect(posted.body).toContain("Builder");
+    expect(posted.body).toContain(longBody);
+  });
+
+  it("does not post comments by people or by plugins, so replies copied from Matrix are not echoed", async () => {
+    const { harness, homeserver } = await setUp();
+    await createIssueThread(harness, homeserver);
+    harness.seed({ issueComments: [comment({ authorAgentId: null, authorUserId: "user-alice" })] });
+
+    await harness.emit("issue.comment.created", { commentId: "comment-1" }, commentEvent("plugin"));
+    await harness.emit("issue.comment.created", { commentId: "comment-1" }, commentEvent("user"));
+
+    expect(homeserver.messagesIn(ROOM)).toHaveLength(1);
+  });
+
+  it("does not start a thread for an agent's comment", async () => {
+    const { harness, homeserver } = await setUp();
+    harness.seed({ issueComments: [comment({})] });
+
+    await harness.emit("issue.comment.created", { commentId: "comment-1" }, commentEvent("agent"));
+
+    expect(homeserver.sent).toHaveLength(0);
   });
 });

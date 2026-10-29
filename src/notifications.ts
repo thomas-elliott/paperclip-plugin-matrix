@@ -6,6 +6,8 @@ type Notice = { text: string; html: string };
 
 // Long run errors, such as stack traces, would bury the room; the full error is in Paperclip.
 const MAX_ERROR_LENGTH = 300;
+// Well under Matrix's 64 KiB limit on an event, and about a screenful.
+const MAX_COMMENT_LENGTH = 4000;
 
 function escapeHtml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -116,6 +118,30 @@ async function runFailed(ctx: PluginContext, matrix: Matrix, event: PluginEvent)
   else await post(ctx, matrix, event, null, notice(summary, link));
 }
 
+// Agents' comments go to the issue's thread, so a conversation started in Matrix can carry on
+// there. Comments copied from Matrix are recorded as the plugin's, so they are not posted back, and
+// comments people write in Paperclip stay in Paperclip. An issue without a thread gets none.
+async function commentCreated(ctx: PluginContext, matrix: Matrix, event: PluginEvent) {
+  if (event.actorType !== "agent" || !event.entityId) return;
+  const thread = await issueThread(ctx, event.entityId);
+  if (!thread) return;
+
+  // The event carries only the start of the comment.
+  const { commentId, identifier } = event.payload as { commentId?: string; identifier?: string | null };
+  const comments = await ctx.issues.listComments(event.entityId, event.companyId);
+  const comment = comments.find((candidate) => candidate.id === commentId);
+  if (!comment) return;
+
+  const agent = (await agentName(ctx, comment.authorAgentId, event.companyId)) ?? "An agent";
+  const cut = comment.body.length > MAX_COMMENT_LENGTH;
+  const body = cut ? `${comment.body.slice(0, MAX_COMMENT_LENGTH)}…` : comment.body;
+  const link = cut ? await pageUrl(ctx, matrix, event.companyId, `issues/${identifier ?? event.entityId}`) : null;
+
+  const text = `${agent}:\n${body}${link ? `\n\nThe rest is in Paperclip: ${link}` : ""}`;
+  const html = `<strong>${escapeHtml(agent)}:</strong><br>${escapeHtml(body).replaceAll("\n", "<br>")}${link ? `<br><br><a href="${escapeHtml(link)}">Read the rest in Paperclip</a>` : ""}`;
+  await sendNotice(ctx, matrix, thread.roomId, transactionId(event), { text, html }, thread.eventId);
+}
+
 // Paperclip opens an incident when spending crosses a budget's warning level, and again when it
 // reaches the limit, which pauses the work. Amounts are in cents.
 async function budgetIncident(ctx: PluginContext, matrix: Matrix, event: PluginEvent) {
@@ -141,6 +167,7 @@ const handlers = {
   "approval.created": approvalCreated,
   "agent.run.failed": runFailed,
   "budget.incident.opened": budgetIncident,
+  "issue.comment.created": commentCreated,
 } as const;
 
 export function registerNotifications(ctx: PluginContext) {
