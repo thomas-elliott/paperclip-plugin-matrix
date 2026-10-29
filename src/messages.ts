@@ -1,8 +1,26 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { sendNotice, type Matrix, type SentEvent } from "./matrix.js";
-import { issueThread, rememberIssueThread } from "./threads.js";
 
 // What the plugin's messages say and where they go, shared by plain notifications and decisions.
+
+const threadKey = (issueId: string) => ({ scopeKind: "issue", scopeId: issueId, stateKey: "matrixThread" }) as const;
+const issueKey = (companyId: string, rootEventId: string) =>
+  ({ scopeKind: "company", scopeId: companyId, namespace: "threads", stateKey: rootEventId }) as const;
+
+// The root of the issue's Matrix thread, or null if it has none yet.
+export async function issueThread(ctx: PluginContext, issueId: string): Promise<SentEvent | null> {
+  return ((await ctx.state.get(threadKey(issueId))) as SentEvent | null) ?? null;
+}
+
+// The issue whose thread starts at this event, or null.
+export async function issueOfThread(ctx: PluginContext, companyId: string, rootEventId: string): Promise<string | null> {
+  return ((await ctx.state.get(issueKey(companyId, rootEventId))) as string | null) ?? null;
+}
+
+export async function rememberIssueThread(ctx: PluginContext, companyId: string, issueId: string, root: SentEvent) {
+  await ctx.state.set(threadKey(issueId), root);
+  await ctx.state.set(issueKey(companyId, root.eventId), issueId);
+}
 
 export type Notice = { text: string; html: string };
 

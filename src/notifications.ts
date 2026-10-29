@@ -1,8 +1,8 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { approvalCreated, approvalDecided, updateInteractionMessages } from "./decisions.js";
 import { connect, errorMessage, sendNotice, type Matrix } from "./matrix.js";
-import { agentName, escapeHtml, issueLabel, notice, pageUrl, postAboutIssue, roomFor, transactionId, type Notice } from "./messages.js";
-import { issueThread } from "./threads.js";
+import { agentName, escapeHtml, issueLabel, issueThread, notice, pageUrl, postAboutIssue, roomFor, transactionId, type Notice } from "./messages.js";
+import { MESSAGE_ORIGIN } from "./threads.js";
 
 // Long run errors, such as stack traces, would bury the room; the full error is in Paperclip.
 const MAX_ERROR_LENGTH = 300;
@@ -18,9 +18,10 @@ async function post(ctx: PluginContext, matrix: Matrix, event: PluginEvent, proj
   if (room) await sendNotice(ctx, matrix, room, transactionId(event), message);
 }
 
+// Issues asked for from Matrix are announced in their own thread when the plugin creates them.
 async function issueCreated(ctx: PluginContext, matrix: Matrix, event: PluginEvent) {
   const issue = event.entityId ? await ctx.issues.get(event.entityId, event.companyId) : null;
-  if (!issue) return;
+  if (!issue || issue.originKind === MESSAGE_ORIGIN) return;
   const agent = await agentName(ctx, issue.assigneeAgentId, event.companyId);
   const summary = `New issue: ${issueLabel(issue)}${agent ? `, assigned to ${agent}` : ""}`;
   const link = await pageUrl(ctx, matrix, event.companyId, `issues/${issue.identifier ?? issue.id}`);

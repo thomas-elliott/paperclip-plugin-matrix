@@ -6,6 +6,7 @@ import { vi } from "vitest";
 
 export const HOMESERVER = "https://matrix.example.com";
 export const BOT_USER = "@paperclip:example.com";
+export const BOT_NAME = "Paperclip";
 const API = `${HOMESERVER}/_matrix/client/v3`;
 
 type Content = Record<string, unknown> & { body?: string; formatted_body?: string; msgtype?: string };
@@ -19,6 +20,8 @@ export class FakeHomeserver {
   aliases = new Map<string, string>();
   // Events other users send, handed to the plugin by its next /sync.
   private pending: { roomId: string; event: RoomEvent }[] = [];
+  // Invites to the bot, handed to the plugin by its next /sync.
+  private pendingInvites: { roomId: string; inviter: string; isDirect: boolean }[] = [];
   private batch = 0;
   // The batch that last handed over delivered events, and the position the latest /sync asked from.
   private deliveredInBatch = 0;
@@ -47,12 +50,17 @@ export class FakeHomeserver {
     this.pending.push({ roomId, event });
   }
 
+  // Another user invites the bot to a room; `isDirect` marks a direct message invite.
+  invite(roomId: string, inviter: string, isDirect: boolean) {
+    this.pendingInvites.push({ roomId, inviter, isDirect });
+  }
+
   // Resolves once the plugin has handled everything delivered so far: it asks for a later batch only
   // when it has finished with the earlier ones. Also waits for the plugin's first sync.
   async read() {
     await vi.waitFor(() => {
       const handledUpTo = this.lastSince ? Number(this.lastSince.slice(1)) : -1;
-      if (this.pending.length > 0 || handledUpTo < this.deliveredInBatch) throw new Error("The plugin has not read the room yet");
+      if (this.pending.length > 0 || this.pendingInvites.length > 0 || handledUpTo < this.deliveredInBatch) throw new Error("The plugin has not read the room yet");
     });
   }
 
@@ -63,6 +71,7 @@ export class FakeHomeserver {
     const segments = path.split("/").slice(1).map(decodeURIComponent);
 
     if (method === "GET" && path === "/account/whoami") return Response.json({ user_id: BOT_USER });
+    if (method === "GET" && segments[0] === "profile" && segments[1] === BOT_USER) return Response.json({ displayname: BOT_NAME });
     if (method === "GET" && path === "/sync") return this.sync(new URL(url).searchParams.get("since"));
 
     if (method === "GET" && segments[0] === "directory" && segments[1] === "room") {
@@ -95,7 +104,7 @@ export class FakeHomeserver {
   // answering, as a real long-poll does, so the plugin's loop does not spin.
   private async sync(since: string | null): Promise<Response> {
     this.lastSince = since;
-    if (this.pending.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+    if (this.pending.length === 0 && this.pendingInvites.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
     this.batch += 1;
     const join: Record<string, { timeline: { events: RoomEvent[] } }> = {};
     // The plugin's first sync asks for no history, so it gets no messages.
@@ -105,7 +114,13 @@ export class FakeHomeserver {
       join[roomId].timeline.events.push(event);
       this.deliveredInBatch = this.batch;
     }
-    return Response.json({ next_batch: `s${this.batch}`, rooms: { join } });
+    const invite: Record<string, { invite_state: { events: unknown[] } }> = {};
+    for (const { roomId, inviter, isDirect } of since ? this.pendingInvites.splice(0) : []) {
+      const membership = { type: "m.room.member", sender: inviter, state_key: BOT_USER, content: { membership: "invite", is_direct: isDirect } };
+      invite[roomId] = { invite_state: { events: [membership] } };
+      this.deliveredInBatch = this.batch;
+    }
+    return Response.json({ next_batch: `s${this.batch}`, rooms: { join, invite } });
   }
 }
 

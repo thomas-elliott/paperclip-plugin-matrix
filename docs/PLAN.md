@@ -107,12 +107,32 @@ Other things learned:
   reactions; other kinds say "Answer in Paperclip". A reaction cannot give a reason, so
   confirmations that require one for rejecting are refused, with the reason posted.
 
+## Milestone 3: starting work from Matrix
+
+- A linked person asks for work by mentioning the bot in a room (`m.mentions.user_ids` contains
+  it), or by messaging it directly. The message becomes an issue they created, with status `todo`,
+  so assigning it wakes the agent. The title is the first line, without the bot's name in front;
+  the description is the whole message.
+- The person's own message is the root of the issue's thread. The bot reacts to it and posts
+  "Created ACME-7 …, assigned to …" in the thread, in place of the usual "New issue" message.
+- Which agent: one the message names as `@url-key`, otherwise the project's lead agent in a
+  project's room (the issue goes in that project too), otherwise the "Default agent" setting. With
+  none, the bot says so in the thread and creates nothing. Rooms have no agent setting of their
+  own: a project's lead agent already says who takes its work.
+- Clients count the author of a message being replied to as mentioned, so a reply to the bot's
+  notices outside direct messages is not a request. Messages in any thread are replies there,
+  never requests.
+- Direct messages: the bot accepts invites only from linked people. A direct message invite
+  (`is_direct`) makes every message in that room a request. An invite to a group room is accepted
+  but messages there still need a mention.
+- Issues carry `originKind` `plugin:paperclip-plugin-matrix:message` and the Matrix event ID as
+  `originId`, so a message read twice does not create a second issue.
+
 ## Later
 
 4. Commands: `!clip status`, `issues`, `agents`, `approve`, `new`, or the same after mentioning
    the bot.
-5. Talking to agents: a mention or direct message starts a thread that becomes an issue. Progress
-   is shown by editing one message in place.
+5. Showing an agent's progress by editing one message in place.
 6. Daily digest, agent tools (`send_matrix_message`, `escalate_to_human`) with a skill, and
    attachments.
 7. Encrypted rooms, and one Matrix user per agent.

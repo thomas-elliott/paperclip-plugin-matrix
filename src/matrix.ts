@@ -12,6 +12,8 @@ export type Matrix = {
   // A room ID (!abc) or alias (#name:server), as typed in the settings.
   defaultRoom: string | null;
   projectRooms: ProjectRoom[];
+  // The agent that gets work asked for outside a project's room, by URL key or name. Null when not set.
+  defaultAgent: string | null;
 };
 
 export function errorMessage(error: unknown): string {
@@ -40,6 +42,7 @@ export async function connect(ctx: PluginContext, companyId: string): Promise<Ma
       const room = trimmed(entry.room);
       return project && room ? [{ project, room }] : [];
     }),
+    defaultAgent: trimmed(config.defaultAgent),
   };
 }
 
@@ -63,10 +66,20 @@ export async function request<T>(ctx: PluginContext, matrix: Matrix, path: strin
 }
 
 // Messages are sent to room IDs; an alias is looked up in the room directory first.
-async function roomIdOf(ctx: PluginContext, matrix: Matrix, room: string): Promise<string> {
+export async function roomIdOf(ctx: PluginContext, matrix: Matrix, room: string): Promise<string> {
   if (!room.startsWith("#")) return room;
   const { room_id } = await request<{ room_id: string }>(ctx, matrix, `/directory/room/${encodeURIComponent(room)}`);
   return room_id;
+}
+
+// The bot's own account. People's clients put its display name in a message's text when they mention it.
+export type Bot = { userId: string; displayName: string | null };
+
+export async function whoAmI(ctx: PluginContext, matrix: Matrix): Promise<Bot> {
+  const { user_id } = await request<{ user_id: string }>(ctx, matrix, "/account/whoami");
+  // An account without a display name gets a 404.
+  const profile = await request<{ displayname?: string }>(ctx, matrix, `/profile/${encodeURIComponent(user_id)}`).catch(() => ({ displayname: undefined }));
+  return { userId: user_id, displayName: profile.displayname ?? null };
 }
 
 export async function joinRoom(ctx: PluginContext, matrix: Matrix, room: string): Promise<void> {

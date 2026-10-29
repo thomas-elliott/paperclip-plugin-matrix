@@ -22,6 +22,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "companies.read",
     "projects.read",
     "issues.read",
+    "issues.create",
     "agents.read",
     "approvals.read",
     "approvals.respond",
@@ -70,6 +71,12 @@ const manifest: PaperclipPluginManifestV1 = {
             room: { type: "string", title: "Room", description: "Room ID or alias" },
           },
         },
+      },
+      defaultAgent: {
+        type: "string",
+        title: "Default agent",
+        description:
+          "Optional. The agent that gets work people ask for by mentioning the bot or messaging it directly, by its URL key or name. In a project's room the project's lead agent gets it instead. Mentioning an agent as @url-key in the message picks that agent.",
       },
       paperclipUrl: {
         type: "string",

@@ -1,16 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Agent, Company, Issue, IssueComment } from "@paperclipai/plugin-sdk";
+import type { Agent, Company, Issue, IssueComment, Project } from "@paperclipai/plugin-sdk";
 import { createTestHarness, type TestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
-import { BOT_USER, FakeHomeserver, HOMESERVER } from "./fake-homeserver.js";
+import { BOT_NAME, BOT_USER, FakeHomeserver, HOMESERVER } from "./fake-homeserver.js";
 
 const COMPANY = "co-1";
 const ROOM = "!general";
 const ALICE = "@alice:example.com";
 const MALLORY = "@mallory:example.com";
 
-const config = { homeserverUrl: HOMESERVER, accessToken: "token-ref", defaultRoom: ROOM };
+const WEBSITE_ROOM = "!website";
+
+const config = {
+  homeserverUrl: HOMESERVER,
+  accessToken: "token-ref",
+  defaultRoom: ROOM,
+  projectRooms: [{ project: "Website", room: "#website:example.com" }],
+  defaultAgent: "builder",
+};
 
 type Member = NonNullable<Parameters<TestHarness["seed"]>[0]["accessMembers"]>[number];
 const member = (userId: string) =>
@@ -29,17 +37,23 @@ const issue = {
 const issueEvent = { companyId: COMPANY, entityType: "issue", entityId: "issue-1" };
 
 // Starts the plugin as Paperclip does after the settings are saved, and waits for its sync loop's first sync.
-async function setUp() {
+async function setUp(settings: Record<string, unknown> = config) {
   const homeserver = new FakeHomeserver().install();
-  const harness = createTestHarness({ manifest, config });
+  homeserver.aliases.set("#website:example.com", WEBSITE_ROOM);
+  const harness = createTestHarness({ manifest, config: settings });
   harness.seed({
     companies: [{ id: COMPANY, name: "Acme", issuePrefix: "ACME" } as Company],
     issues: [issue],
-    agents: [{ id: "agent-1", companyId: COMPANY, name: "Builder" } as Agent],
+    agents: [
+      { id: "agent-1", companyId: COMPANY, name: "Builder", urlKey: "builder", status: "idle" } as Agent,
+      { id: "agent-2", companyId: COMPANY, name: "Designer", urlKey: "designer", status: "idle" } as Agent,
+      { id: "agent-3", companyId: COMPANY, name: "Reviewer", urlKey: "reviewer", status: "idle" } as Agent,
+    ],
+    projects: [{ id: "project-1", companyId: COMPANY, name: "Website", leadAgentId: "agent-2" } as Project],
     accessMembers: [member("user-alice")],
   });
   await plugin.definition.setup(harness.ctx);
-  await plugin.definition.onConfigChanged?.(config, { companyId: COMPANY });
+  await plugin.definition.onConfigChanged?.(settings, { companyId: COMPANY });
   await homeserver.read();
   return { harness, homeserver };
 }
@@ -53,6 +67,17 @@ function message(sender: string, body: string, threadRoot?: string) {
     event_id: `$incoming-${nextEvent}`,
     content: { msgtype: "m.text", body, ...(threadRoot ? { "m.relates_to": { rel_type: "m.thread", event_id: threadRoot } } : {}) },
   };
+}
+
+// A message that mentions the bot, as Element sends it: the display name starts the text.
+function mention(sender: string, body: string) {
+  const event = message(sender, `${BOT_NAME}: ${body}`);
+  return { ...event, content: { ...event.content, "m.mentions": { user_ids: [BOT_USER] } } };
+}
+
+// Issues the plugin created from Matrix messages; the seeded issue is not one.
+async function requestedIssues(harness: TestHarness) {
+  return (await harness.ctx.issues.list({ companyId: COMPANY })).filter((candidate) => candidate.id !== "issue-1");
 }
 
 // Alice links her Matrix account as Paperclip user user-alice, the way the dashboard widget does.
@@ -237,5 +262,144 @@ describe("agent comments", () => {
     await harness.emit("issue.comment.created", { commentId: "comment-1" }, commentEvent("agent"));
 
     expect(homeserver.sent).toHaveLength(0);
+  });
+});
+
+describe("starting work", () => {
+  it("turns a linked person's mention into an issue for the default agent, with their message as the thread's root", async () => {
+    const { harness, homeserver } = await setUp();
+    await linkAlice(harness, homeserver);
+    const request = mention(ALICE, "Fix the signup form\nIt rejects addresses with a plus sign.");
+
+    homeserver.deliver(ROOM, request);
+    await homeserver.read();
+
+    const [created] = await requestedIssues(harness);
+    expect(created).toMatchObject({
+      title: "Fix the signup form",
+      description: "Fix the signup form\nIt rejects addresses with a plus sign.",
+      status: "todo",
+      assigneeAgentId: "agent-1",
+      projectId: null,
+    });
+    expect(homeserver.reactions()).toContainEqual(expect.objectContaining({ event_id: request.event_id }));
+    const [confirmation] = homeserver.messagesIn(ROOM);
+    expect(confirmation["m.relates_to"]).toMatchObject({ rel_type: "m.thread", event_id: request.event_id });
+    expect(confirmation.body).toContain("assigned to Builder");
+
+    // Replies in the thread carry the conversation on.
+    homeserver.deliver(ROOM, message(ALICE, "Also on the mobile site", request.event_id));
+    await homeserver.read();
+    expect(await harness.ctx.issues.listComments(created.id, COMPANY)).toEqual([expect.objectContaining({ body: "Also on the mobile site" })]);
+  });
+
+  it("does not post the usual new-issue message for an issue asked for from Matrix", async () => {
+    const { harness, homeserver } = await setUp();
+    await linkAlice(harness, homeserver);
+    homeserver.deliver(ROOM, mention(ALICE, "Fix the signup form"));
+    await homeserver.read();
+    const [created] = await requestedIssues(harness);
+
+    await harness.emit("issue.created", {}, { companyId: COMPANY, entityType: "issue", entityId: created.id });
+
+    expect(homeserver.messagesIn(ROOM)).toHaveLength(1);
+  });
+
+  it("gives work asked for in a project's room to the project's lead agent", async () => {
+    const { harness, homeserver } = await setUp();
+    await linkAlice(harness, homeserver);
+
+    homeserver.deliver(WEBSITE_ROOM, mention(ALICE, "Make the header smaller"));
+    await homeserver.read();
+
+    expect(await requestedIssues(harness)).toEqual([expect.objectContaining({ projectId: "project-1", assigneeAgentId: "agent-2" })]);
+  });
+
+  it("gives the work to an agent the message mentions as @url-key, but not to a Matrix user of the same name", async () => {
+    const { harness, homeserver } = await setUp();
+    await linkAlice(harness, homeserver);
+
+    homeserver.deliver(WEBSITE_ROOM, mention(ALICE, "@designer:example.com thinks @reviewer should check the header"));
+    await homeserver.read();
+
+    expect(await requestedIssues(harness)).toEqual([expect.objectContaining({ assigneeAgentId: "agent-3" })]);
+  });
+
+  it("explains, and creates nothing, when no agent can be chosen", async () => {
+    const { harness, homeserver } = await setUp({ ...config, defaultAgent: undefined });
+    await linkAlice(harness, homeserver);
+    const request = mention(ALICE, "Fix the signup form");
+
+    homeserver.deliver(ROOM, request);
+    await homeserver.read();
+
+    expect(await requestedIssues(harness)).toHaveLength(0);
+    const [reason] = homeserver.messagesIn(ROOM);
+    expect(reason.body).toContain("No agent");
+    expect(reason["m.relates_to"]).toMatchObject({ rel_type: "m.thread", event_id: request.event_id });
+  });
+
+  it("ignores mentions from unlinked people, replies to the bot, and messages that do not mention it", async () => {
+    const { harness, homeserver } = await setUp();
+    await linkAlice(harness, homeserver);
+    // Clients list the author of the message replied to as mentioned.
+    const thanks = mention(ALICE, "Thanks");
+    const reply = { ...thanks, content: { ...thanks.content, "m.relates_to": { "m.in_reply_to": { event_id: "$a-bot-notice" } } } };
+
+    homeserver.deliver(ROOM, mention(MALLORY, "Delete everything"));
+    homeserver.deliver(ROOM, reply);
+    homeserver.deliver(ROOM, message(ALICE, "Just chatting"));
+    await homeserver.read();
+
+    expect(await requestedIssues(harness)).toHaveLength(0);
+  });
+
+  it("creates one issue when it reads the same message twice", async () => {
+    const { harness, homeserver } = await setUp();
+    await linkAlice(harness, homeserver);
+    const request = mention(ALICE, "Fix the signup form");
+
+    homeserver.deliver(ROOM, request);
+    homeserver.deliver(ROOM, request);
+    await homeserver.read();
+
+    expect(await requestedIssues(harness)).toHaveLength(1);
+  });
+});
+
+describe("direct messages", () => {
+  it("joins a linked person's direct message room, where every message asks for work", async () => {
+    const { harness, homeserver } = await setUp();
+    await linkAlice(harness, homeserver);
+
+    homeserver.invite("!alice-dm", ALICE, true);
+    await homeserver.read();
+    homeserver.deliver("!alice-dm", message(ALICE, "Fix the signup form"));
+    await homeserver.read();
+
+    expect(homeserver.joined).toContain("!alice-dm");
+    expect(await requestedIssues(harness)).toEqual([expect.objectContaining({ title: "Fix the signup form", assigneeAgentId: "agent-1" })]);
+  });
+
+  it("ignores invites from people who have not linked an account", async () => {
+    const { homeserver } = await setUp();
+
+    homeserver.invite("!mallory-dm", MALLORY, true);
+    await homeserver.read();
+
+    expect(homeserver.joined).not.toContain("!mallory-dm");
+  });
+
+  it("joins a linked person's group room without treating every message there as a request", async () => {
+    const { harness, homeserver } = await setUp();
+    await linkAlice(harness, homeserver);
+
+    homeserver.invite("!team", ALICE, false);
+    await homeserver.read();
+    homeserver.deliver("!team", message(ALICE, "Morning all"));
+    await homeserver.read();
+
+    expect(homeserver.joined).toContain("!team");
+    expect(await requestedIssues(harness)).toHaveLength(0);
   });
 });

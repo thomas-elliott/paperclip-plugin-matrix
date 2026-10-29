@@ -1,8 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { handleReaction } from "./decisions.js";
-import { connect, errorMessage, NOT_CONFIGURED, request } from "./matrix.js";
-import { handleRoomEvent, type RoomEvent } from "./threads.js";
+import { connect, errorMessage, NOT_CONFIGURED, request, whoAmI, type Bot } from "./matrix.js";
+import { handleInvite, handleRoomEvent, type InviteEvent, type RoomEvent } from "./threads.js";
 
 // How long the homeserver may hold a /sync request open when nothing happens. ctx.http.fetch gives up
 // on any call after 30 seconds, so this stays well below that.
@@ -12,7 +12,13 @@ const MAX_RETRY_DELAY_MS = 60_000;
 // Asks for no room history on the first sync: the plugin acts only on messages sent after it starts.
 const FIRST_SYNC_FILTER = encodeURIComponent(JSON.stringify({ room: { timeline: { limit: 0 } } }));
 
-type SyncResponse = { next_batch: string; rooms?: { join?: Record<string, { timeline?: { events?: RoomEvent[] } }> } };
+type SyncResponse = {
+  next_batch: string;
+  rooms?: {
+    join?: Record<string, { timeline?: { events?: RoomEvent[] } }>;
+    invite?: Record<string, { invite_state?: { events?: InviteEvent[] } }>;
+  };
+};
 
 export type SyncStatus = { running: boolean; lastError: string | null };
 
@@ -47,6 +53,8 @@ export function startSync(ctx: PluginContext, companyId: string) {
 
   async function run() {
     let failures = 0;
+    // Looked up once: the token, and so the account, only changes with a settings save, which restarts the loop.
+    let bot: Bot | null = null;
     while (!stopped) {
       try {
         const matrix = await connect(ctx, companyId);
@@ -54,6 +62,7 @@ export function startSync(ctx: PluginContext, companyId: string) {
           status.lastError = NOT_CONFIGURED;
           break;
         }
+        bot ??= await whoAmI(ctx, matrix);
         const since = (await ctx.state.get(sinceKey)) as string | null;
         const path = since
           ? `/sync?timeout=${POLL_TIMEOUT_MS}&since=${encodeURIComponent(since)}`
@@ -62,11 +71,18 @@ export function startSync(ctx: PluginContext, companyId: string) {
         const body = await request<SyncResponse>(ctx, matrix, path);
         // A loop replaced by a settings save must not move the position the new loop reads from.
         if (stopped) break;
+        // One invite or message that cannot be handled must not stop the loop reading later ones.
+        for (const [roomId, room] of Object.entries(body.rooms?.invite ?? {})) {
+          await handleInvite(ctx, matrix, bot, companyId, roomId, room.invite_state?.events ?? []).catch((error) => {
+            ctx.logger.warn("Could not accept a Matrix invite", { companyId, roomId, error: errorMessage(error) });
+          });
+        }
         for (const [roomId, room] of Object.entries(body.rooms?.join ?? {})) {
           for (const event of room.timeline?.events ?? []) {
-            // One message that cannot be handled must not stop the loop reading later ones.
-            const handle = event.type === "m.reaction" ? handleReaction : handleRoomEvent;
-            await handle(ctx, matrix, companyId, roomId, event).catch((error) => {
+            const handled = event.type === "m.reaction"
+              ? handleReaction(ctx, matrix, companyId, roomId, event)
+              : handleRoomEvent(ctx, matrix, bot, companyId, roomId, event);
+            await handled.catch((error) => {
               ctx.logger.warn("Could not handle a Matrix message", { companyId, roomId, eventId: event.event_id, error: errorMessage(error) });
             });
           }

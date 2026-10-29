@@ -1,8 +1,8 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { linkedMatrixUser, linkedUser } from "./links.js";
 import { editNotice, errorMessage, sendNotice, sendReaction, type Matrix, type SentEvent } from "./matrix.js";
-import { agentName, escapeHtml, notice, pageUrl, postAboutIssue, transactionId, type Notice } from "./messages.js";
-import { issueThread, type RoomEvent } from "./threads.js";
+import { agentName, escapeHtml, issueThread, notice, pageUrl, postAboutIssue, transactionId, type Notice } from "./messages.js";
+import type { RoomEvent } from "./threads.js";
 
 // Approvals, and agents' questions and confirmation requests (Paperclip's "interactions"). A linked
 // person approves or rejects by reacting to the bot's message with a tick or a cross; Paperclip
