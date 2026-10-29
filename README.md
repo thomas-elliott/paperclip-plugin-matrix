@@ -37,8 +37,6 @@ Only linked people can reply, decide, ask for work or use commands. The bot igno
 - Everything is posted by one bot account, with the agent's name in the message. Agents do not have
   their own Matrix accounts.
 - Editing or deleting a message in Matrix does not change the comment or issue made from it.
-- Paperclip blocks plugins from private network addresses, such as `192.168.x.x`, so Paperclip must
-  reach the homeserver at a public address.
 
 ## Install
 
@@ -86,6 +84,7 @@ Open the Matrix plugin's settings in Paperclip:
 | Bot access token | The access token from step 1, added as a Paperclip secret |
 | Room | The default room, as a room ID (`!abc…`) or alias (`#name:example.com`). Approvals, budget warnings and issues outside a project's room go here |
 | Default agent | Optional. The URL key or name of the agent that gets work asked for outside a project's room |
+| Homeserver is on a private network | Turn on if Paperclip reaches the homeserver at a private address, such as `192.168.x.x` or `10.x.x.x`. Paperclip blocks plugins from private addresses unless this is on |
 | Paperclip address | Optional. Paperclip's web address, such as `https://paperclip.example.com`, so messages link to it |
 
 Invite the bot to the default room, then save. The bot joins the room when the settings are saved.

@@ -66,6 +66,13 @@ const manifest: PaperclipPluginManifestV1 = {
         description:
           "Optional. The agent that gets work people ask for by mentioning the bot or messaging it directly, by its URL key or name. In a project's room the project's lead agent gets it instead. Mentioning an agent as @url-key in the message picks that agent.",
       },
+      privateNetwork: {
+        type: "boolean",
+        default: false,
+        title: "Homeserver is on a private network",
+        description:
+          "Turn on if Paperclip reaches the homeserver at a private address, such as 192.168.x.x or 10.x.x.x. Paperclip blocks plugins from private addresses unless this is on.",
+      },
       paperclipUrl: {
         type: "string",
         title: "Paperclip address",

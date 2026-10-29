@@ -681,3 +681,16 @@ describe("encrypted rooms", () => {
     expect(homeserver.messagesIn(WEBSITE_ROOM)).toHaveLength(0);
   });
 });
+
+describe("private network", () => {
+  // Paperclip's fetch refuses private addresses, so a homeserver on a private network is reached directly.
+  it("reaches the homeserver without Paperclip's fetch when it is on a private network", async () => {
+    const { harness, homeserver } = await setUp({ ...config, privateNetwork: true }, (harness) => {
+      vi.spyOn(harness.ctx.http, "fetch").mockRejectedValue(new Error("All resolved IPs for matrix.example.com are in private/reserved ranges"));
+    });
+
+    await harness.emit("issue.created", {}, issueEvent);
+
+    expect(homeserver.messagesIn(ROOM)).toHaveLength(1);
+  });
+});

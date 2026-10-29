@@ -12,6 +12,8 @@ export type Matrix = {
   defaultRoom: string | null;
   // The agent that gets work asked for outside a project's room, by URL key or name. Null when not set.
   defaultAgent: string | null;
+  // Paperclip's fetch refuses private addresses, so a homeserver on a private network is called directly.
+  privateNetwork: boolean;
 };
 
 export function errorMessage(error: unknown): string {
@@ -35,6 +37,7 @@ export async function connect(ctx: PluginContext, companyId: string): Promise<Ma
     paperclipUrl: trimmed(config.paperclipUrl)?.replace(/\/+$/, "") ?? null,
     defaultRoom: trimmed(config.defaultRoom),
     defaultAgent: trimmed(config.defaultAgent),
+    privateNetwork: config.privateNetwork === true,
   };
 }
 
@@ -50,12 +53,14 @@ const MAX_ATTEMPTS = 3;
 export async function request<T>(ctx: PluginContext, matrix: Matrix, path: string, options: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json", Authorization: `Bearer ${matrix.token}` };
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
+  const url = `${matrix.homeserverUrl}/_matrix/client/v3${path}`;
+  const init = { method: options.method ?? "GET", headers, body: options.body === undefined ? undefined : JSON.stringify(options.body) };
   for (let attempt = 1; ; attempt += 1) {
-    const response = await ctx.http.fetch(`${matrix.homeserverUrl}/_matrix/client/v3${path}`, {
-      method: options.method ?? "GET",
-      headers,
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    });
+    // Bypassing ctx.http.fetch is safe because only an instance admin can set the homeserver address.
+    // The timeout matches ctx.http.fetch's.
+    const response = matrix.privateNetwork
+      ? await fetch(url, { ...init, signal: AbortSignal.timeout(30_000) })
+      : await ctx.http.fetch(url, init);
     const body = (await response.json().catch(() => ({}))) as T & { errcode?: string; error?: string; retry_after_ms?: number };
     const wait = body.retry_after_ms ?? 1000;
     if (response.status === 429 && attempt < MAX_ATTEMPTS && wait <= MAX_RATE_LIMIT_WAIT_MS) {
