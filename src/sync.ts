@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { connect, errorMessage, NOT_CONFIGURED, request } from "./matrix.js";
+import { handleRoomEvent, type RoomEvent } from "./threads.js";
 
 // How long the homeserver may hold a /sync request open when nothing happens. ctx.http.fetch gives up
 // on any call after 30 seconds, so this stays well below that.
@@ -9,6 +10,8 @@ const MAX_RETRY_DELAY_MS = 60_000;
 
 // Asks for no room history on the first sync: the plugin acts only on messages sent after it starts.
 const FIRST_SYNC_FILTER = encodeURIComponent(JSON.stringify({ room: { timeline: { limit: 0 } } }));
+
+type SyncResponse = { next_batch: string; rooms?: { join?: Record<string, { timeline?: { events?: RoomEvent[] } }> } };
 
 export type SyncStatus = { running: boolean; lastError: string | null };
 
@@ -55,9 +58,17 @@ export function startSync(ctx: PluginContext, companyId: string) {
           ? `/sync?timeout=${POLL_TIMEOUT_MS}&since=${encodeURIComponent(since)}`
           : `/sync?filter=${FIRST_SYNC_FILTER}`;
 
-        const body = await request<{ next_batch: string }>(ctx, matrix, path);
+        const body = await request<SyncResponse>(ctx, matrix, path);
         // A loop replaced by a settings save must not move the position the new loop reads from.
         if (stopped) break;
+        for (const [roomId, room] of Object.entries(body.rooms?.join ?? {})) {
+          for (const event of room.timeline?.events ?? []) {
+            // One message that cannot be handled must not stop the loop reading later ones.
+            await handleRoomEvent(ctx, matrix, companyId, roomId, event).catch((error) => {
+              ctx.logger.warn("Could not handle a Matrix message", { companyId, roomId, eventId: event.event_id, error: errorMessage(error) });
+            });
+          }
+        }
         await ctx.state.set(sinceKey, body.next_batch);
         status.lastError = null;
         failures = 0;

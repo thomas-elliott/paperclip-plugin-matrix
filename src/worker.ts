@@ -1,5 +1,6 @@
-import { definePlugin, runWorker, type PluginContext } from "@paperclipai/plugin-sdk";
+import { definePlugin, runWorker, type PluginContext, type PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { connect, errorMessage, joinRoom, NOT_CONFIGURED, request } from "./matrix.js";
+import { linkedMatrixUser, startLink, unlinkUser } from "./links.js";
 import { registerNotifications } from "./notifications.js";
 import { startSync, stopAllSyncs, syncStatus, type SyncStatus } from "./sync.js";
 
@@ -32,6 +33,29 @@ async function checkConnection(ctx: PluginContext, companyId: string): Promise<C
   }
 }
 
+// Linking acts for the Paperclip user who is signed in, as Paperclip reports them to the action.
+// Agents and the system have no Matrix account to link.
+function signedInUser(context: PluginPerformActionContext): { userId: string; companyId: string } {
+  const { userId, companyId } = context.actor;
+  if (context.actor.type !== "user" || !userId || !companyId) throw new Error("Only a signed-in Paperclip user can link a Matrix account.");
+  return { userId, companyId };
+}
+
+function registerLinkActions(ctx: PluginContext) {
+  ctx.actions.register("startLink", async (params, context) => {
+    const { userId, companyId } = signedInUser(context);
+    return startLink(ctx, companyId, userId, String(params.matrixUserId ?? "").trim());
+  });
+  ctx.actions.register("linkStatus", async (_params, context) => {
+    const { userId, companyId } = signedInUser(context);
+    return { matrixUserId: await linkedMatrixUser(ctx, companyId, userId) };
+  });
+  ctx.actions.register("unlink", async (_params, context) => {
+    const { userId, companyId } = signedInUser(context);
+    await unlinkUser(ctx, companyId, userId);
+  });
+}
+
 let pluginContext: PluginContext | null = null;
 
 function requireContext(): PluginContext {
@@ -46,6 +70,7 @@ const plugin = definePlugin({
   async setup(ctx) {
     ctx.data.register("connection", async (params) => checkConnection(ctx, String(params.companyId ?? "")));
     registerNotifications(ctx);
+    registerLinkActions(ctx);
     pluginContext = ctx;
   },
 

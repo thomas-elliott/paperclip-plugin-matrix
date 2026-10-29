@@ -43,8 +43,9 @@ Tested on 29 October 2026 against the development Paperclip (2026.1023.0) and ma
    such calls if they name a company whose settings are saved. After a worker restart, Paperclip
    replays each company's saved settings, which starts the loop again. Tested with disable and
    enable, not a full server restart.
-3. A comment created with `actorUserId` wakes the issue's assignee, as a board user's comment does.
-   This is documented in the SDK's `createComment`; confirm it when building step 2.
+3. A comment created with `actorUserId` wakes the issue's assignee, as a board user's comment does,
+   unless the issue is done or cancelled. Confirmed on 29 October 2026: a Matrix reply on a backlog
+   issue started the assigned agent's run with wake reason `issue_commented`.
 4. Idle sleep does not apply. Only a hosting controller such as Paperclip's cloud puts an instance
    to sleep, and a worker without `onIdleDrain` keeps it awake.
 
@@ -79,7 +80,11 @@ Other things learned:
 - A reply in the thread from a linked Matrix user becomes a comment on the issue, attributed to
   their Paperclip user. Replies from unlinked users are ignored.
 - The bot reacts to each reply it has copied, so people can see it arrived.
-- Linking: a settings table that maps a Matrix user ID to a Paperclip company member.
+- Linking: each person links their own accounts. In the dashboard widget they enter their Matrix
+  ID and get a six-digit code, then send `!link <code>` from that Matrix account within 15
+  minutes. Paperclip tells the plugin which signed-in user asked, and only the named Matrix
+  account can use the code. A settings table could not work: Paperclip identifies members only by
+  an opaque user ID.
 
 ## Later
 

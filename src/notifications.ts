@@ -1,5 +1,6 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { connect, errorMessage, sendNotice, type Matrix } from "./matrix.js";
+import { issueThread, rememberIssueThread } from "./threads.js";
 
 type Notice = { text: string; html: string };
 
@@ -48,11 +49,26 @@ async function roomFor(ctx: PluginContext, matrix: Matrix, companyId: string, pr
   return matrix.defaultRoom;
 }
 
+// Using the event ID as the transaction ID means a redelivered event is not posted twice.
+const transactionId = (event: PluginEvent) => `paperclip-${event.eventId}`;
+
 async function post(ctx: PluginContext, matrix: Matrix, event: PluginEvent, projectId: string | null, message: Notice) {
   const room = await roomFor(ctx, matrix, event.companyId, projectId);
+  if (room) await sendNotice(ctx, matrix, room, transactionId(event), message);
+}
+
+// Posts in the issue's thread. The first message about an issue starts its thread, in the room the
+// issue's project uses at that time; the thread stays in that room.
+async function postAboutIssue(ctx: PluginContext, matrix: Matrix, event: PluginEvent, issue: { id: string; projectId: string | null }, message: Notice) {
+  const thread = await issueThread(ctx, issue.id);
+  if (thread) {
+    await sendNotice(ctx, matrix, thread.roomId, transactionId(event), message, thread.eventId);
+    return;
+  }
+  const room = await roomFor(ctx, matrix, event.companyId, issue.projectId);
   if (!room) return;
-  // Using the event ID as the transaction ID means a redelivered event is not posted twice.
-  await sendNotice(ctx, matrix, room, `paperclip-${event.eventId}`, message);
+  const root = await sendNotice(ctx, matrix, room, transactionId(event), message);
+  await rememberIssueThread(ctx, event.companyId, issue.id, root);
 }
 
 async function issueCreated(ctx: PluginContext, matrix: Matrix, event: PluginEvent) {
@@ -61,7 +77,7 @@ async function issueCreated(ctx: PluginContext, matrix: Matrix, event: PluginEve
   const agent = await agentName(ctx, issue.assigneeAgentId, event.companyId);
   const summary = `New issue: ${issueLabel(issue)}${agent ? `, assigned to ${agent}` : ""}`;
   const link = await pageUrl(ctx, matrix, event.companyId, `issues/${issue.identifier ?? issue.id}`);
-  await post(ctx, matrix, event, issue.projectId, notice(summary, link));
+  await postAboutIssue(ctx, matrix, event, issue, notice(summary, link));
 }
 
 // issue.updated lists the fields that changed, with their old values under `_previous`. Only the
@@ -74,7 +90,7 @@ async function issueUpdated(ctx: PluginContext, matrix: Matrix, event: PluginEve
   const issue = event.entityId ? await ctx.issues.get(event.entityId, event.companyId) : null;
   if (!issue) return;
   const link = await pageUrl(ctx, matrix, event.companyId, `issues/${issue.identifier ?? issue.id}`);
-  await post(ctx, matrix, event, issue.projectId, notice(`Done: ${issueLabel(issue)}`, link));
+  await postAboutIssue(ctx, matrix, event, issue, notice(`Done: ${issueLabel(issue)}`, link));
 }
 
 async function approvalCreated(ctx: PluginContext, matrix: Matrix, event: PluginEvent) {
@@ -96,7 +112,8 @@ async function runFailed(ctx: PluginContext, matrix: Matrix, event: PluginEvent)
   const link = payload.agentId && payload.runId
     ? await pageUrl(ctx, matrix, event.companyId, `agents/${payload.agentId}/runs/${payload.runId}`)
     : null;
-  await post(ctx, matrix, event, issue?.projectId ?? null, notice(summary, link));
+  if (issue) await postAboutIssue(ctx, matrix, event, issue, notice(summary, link));
+  else await post(ctx, matrix, event, null, notice(summary, link));
 }
 
 // Paperclip opens an incident when spending crosses a budget's warning level, and again when it

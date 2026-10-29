@@ -73,7 +73,16 @@ export async function joinRoom(ctx: PluginContext, matrix: Matrix, room: string)
   await request(ctx, matrix, `/join/${encodeURIComponent(room)}`, { method: "POST", body: {} });
 }
 
-// Posts a notice: the message type Matrix gives bots, so other bots do not answer it.
+export type SentEvent = { roomId: string; eventId: string };
+
+async function sendEvent(ctx: PluginContext, matrix: Matrix, roomId: string, type: string, txnId: string, content: unknown): Promise<SentEvent> {
+  const path = `/rooms/${encodeURIComponent(roomId)}/send/${type}/${encodeURIComponent(txnId)}`;
+  const { event_id } = await request<{ event_id: string }>(ctx, matrix, path, { method: "PUT", body: content });
+  return { roomId, eventId: event_id };
+}
+
+// Posts a notice: the message type Matrix gives bots, so other bots do not answer it. With
+// `threadRoot`, the notice goes in that event's thread; clients without threads show it as a reply.
 // The homeserver ignores a repeated transaction ID, so giving the same `txnId` twice posts once.
 export async function sendNotice(
   ctx: PluginContext,
@@ -81,10 +90,22 @@ export async function sendNotice(
   room: string,
   txnId: string,
   message: { text: string; html: string },
-): Promise<void> {
+  threadRoot?: string,
+): Promise<SentEvent> {
   const roomId = await roomIdOf(ctx, matrix, room);
-  await request(ctx, matrix, `/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${encodeURIComponent(txnId)}`, {
-    method: "PUT",
-    body: { msgtype: "m.notice", body: message.text, format: "org.matrix.custom.html", formatted_body: message.html },
+  return sendEvent(ctx, matrix, roomId, "m.room.message", txnId, {
+    msgtype: "m.notice",
+    body: message.text,
+    format: "org.matrix.custom.html",
+    formatted_body: message.html,
+    ...(threadRoot
+      ? { "m.relates_to": { rel_type: "m.thread", event_id: threadRoot, is_falling_back: true, "m.in_reply_to": { event_id: threadRoot } } }
+      : {}),
+  });
+}
+
+export async function sendReaction(ctx: PluginContext, matrix: Matrix, roomId: string, eventId: string, key: string): Promise<void> {
+  await sendEvent(ctx, matrix, roomId, "m.reaction", `reaction-${eventId}`, {
+    "m.relates_to": { rel_type: "m.annotation", event_id: eventId, key },
   });
 }
