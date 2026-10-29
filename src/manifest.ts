@@ -32,6 +32,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "issue.interactions.read",
     "issue.interactions.respond",
     "ui.dashboardWidget.register",
+    "ui.detailTab.register",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -57,20 +58,7 @@ const manifest: PaperclipPluginManifestV1 = {
         type: "string",
         title: "Room",
         description:
-          "Where the bot posts, as a room ID (!abc…) or alias (#name:server). Invite the bot first. Encrypted rooms are not supported.",
-      },
-      projectRooms: {
-        type: "array",
-        title: "Project rooms",
-        description: "Optional. Posts about these projects go to their own room instead.",
-        items: {
-          type: "object",
-          required: ["project", "room"],
-          properties: {
-            project: { type: "string", title: "Project", description: "The project's name, as shown in Paperclip" },
-            room: { type: "string", title: "Room", description: "Room ID or alias" },
-          },
-        },
+          "Where the bot posts, as a room ID (!abc…) or alias (#name:server). Invite the bot first. Encrypted rooms are not supported. A project can have its own room, set in the project's Matrix tab.",
       },
       defaultAgent: {
         type: "string",
@@ -92,6 +80,13 @@ const manifest: PaperclipPluginManifestV1 = {
         id: "matrix-connection",
         displayName: "Matrix connection",
         exportName: "DashboardWidget",
+      },
+      {
+        type: "detailTab",
+        id: "matrix-project-room",
+        displayName: "Matrix",
+        exportName: "ProjectRoomTab",
+        entityTypes: ["project"],
       },
     ],
   },

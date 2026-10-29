@@ -1,7 +1,7 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { linkedMatrixUser, linkedUser } from "./links.js";
 import { editNotice, errorMessage, sendNotice, sendReaction, type Matrix, type SentEvent } from "./matrix.js";
-import { agentName, escapeHtml, issueThread, notice, pageUrl, postAboutIssue, transactionId, type Notice } from "./messages.js";
+import { agentName, issueThread, multiLineNotice, notice, pageUrl, postAboutIssue, transactionId } from "./messages.js";
 import type { RoomEvent } from "./threads.js";
 
 // Approvals, and agents' questions and confirmation requests (Paperclip's "interactions"). A linked
@@ -52,14 +52,6 @@ async function byWhom(ctx: PluginContext, companyId: string, userId: string | nu
   if (!userId) return "";
   const matrixUserId = await linkedMatrixUser(ctx, companyId, userId);
   return matrixUserId ? ` by ${matrixUserId}` : " in Paperclip";
-}
-
-function multiLineNotice(lines: string[], link: string | null): Notice {
-  const text = lines.join("\n");
-  return {
-    text: link ? `${text}\n${link}` : text,
-    html: `${escapeHtml(text).replaceAll("\n", "<br>")}${link ? `<br><a href="${escapeHtml(link)}">Open in Paperclip</a>` : ""}`,
-  };
 }
 
 // The bot adds both reactions itself, so people only have to click one.

@@ -16,7 +16,6 @@ const config = {
   homeserverUrl: HOMESERVER,
   accessToken: "token-ref",
   defaultRoom: ROOM,
-  projectRooms: [{ project: "Website", room: "#website:example.com" }],
   defaultAgent: "builder",
 };
 
@@ -39,7 +38,6 @@ const issueEvent = { companyId: COMPANY, entityType: "issue", entityId: "issue-1
 // Starts the plugin as Paperclip does after the settings are saved, and waits for its sync loop's first sync.
 async function setUp(settings: Record<string, unknown> = config) {
   const homeserver = new FakeHomeserver().install();
-  homeserver.aliases.set("#website:example.com", WEBSITE_ROOM);
   const harness = createTestHarness({ manifest, config: settings });
   harness.seed({
     companies: [{ id: COMPANY, name: "Acme", issuePrefix: "ACME" } as Company],
@@ -53,6 +51,11 @@ async function setUp(settings: Record<string, unknown> = config) {
     accessMembers: [member("user-alice")],
   });
   await plugin.definition.setup(harness.ctx);
+  await harness.performAction(
+    "setProjectRoom",
+    { projectId: "project-1", roomId: WEBSITE_ROOM },
+    { companyId: COMPANY, actor: { type: "user", userId: "user-alice", companyId: COMPANY } },
+  );
   await plugin.definition.onConfigChanged?.(settings, { companyId: COMPANY });
   await homeserver.read();
   return { harness, homeserver };
@@ -255,6 +258,19 @@ describe("agent comments", () => {
     expect(homeserver.messagesIn(ROOM)).toHaveLength(1);
   });
 
+  it("renders the agent's Markdown, showing any HTML in it as text", async () => {
+    const { harness, homeserver } = await setUp();
+    await createIssueThread(harness, homeserver);
+    harness.seed({ issueComments: [comment({ body: "**Fixed.** See `login.ts`.\n\n<img src=x>" })] });
+
+    await harness.emit("issue.comment.created", { commentId: "comment-1" }, commentEvent("agent"));
+
+    const [, posted] = homeserver.messagesIn(ROOM);
+    expect(posted.formatted_body).toContain("<strong>Fixed.</strong>");
+    expect(posted.formatted_body).toContain("<code>login.ts</code>");
+    expect(posted.formatted_body).toContain("&lt;img src=x&gt;");
+  });
+
   it("does not start a thread for an agent's comment", async () => {
     const { harness, homeserver } = await setUp();
     harness.seed({ issueComments: [comment({})] });
@@ -401,5 +417,60 @@ describe("direct messages", () => {
 
     expect(homeserver.joined).toContain("!team");
     expect(await requestedIssues(harness)).toHaveLength(0);
+  });
+});
+
+describe("commands", () => {
+  const otherIssue = { ...issue, id: "issue-2", identifier: "ACME-8", title: "Redesign the header", projectId: "project-1", status: "in_progress", assigneeAgentId: "agent-2" } as Issue;
+
+  it("answers !clip status with open work, working agents and waiting approvals", async () => {
+    const { harness, homeserver } = await setUp();
+    harness.seed({ issues: [issue, otherIssue], agents: [{ id: "agent-2", companyId: COMPANY, name: "Designer", urlKey: "designer", status: "running" } as Agent] });
+    await linkAlice(harness, homeserver);
+
+    homeserver.deliver(ROOM, message(ALICE, "!clip status"));
+    await homeserver.read();
+
+    const [answer] = homeserver.messagesIn(ROOM);
+    expect(answer.body).toContain("Open issues: 1 in progress, 0 in review, 0 blocked, 1 to do");
+    expect(answer.body).toContain("Working now: Designer");
+    expect(answer.body).toContain("Approvals waiting: 0");
+  });
+
+  it("lists open issues, only the project's in a project's room", async () => {
+    const { harness, homeserver } = await setUp();
+    harness.seed({ issues: [issue, otherIssue] });
+    await linkAlice(harness, homeserver);
+
+    homeserver.deliver(ROOM, message(ALICE, "!clip issues"));
+    homeserver.deliver(WEBSITE_ROOM, message(ALICE, "!clip issues"));
+    await homeserver.read();
+
+    const [everywhere] = homeserver.messagesIn(ROOM);
+    expect(everywhere.body).toContain("ACME-7 Fix the login page: to do");
+    expect(everywhere.body).toContain("ACME-8 Redesign the header: in progress, Designer");
+    const [website] = homeserver.messagesIn(WEBSITE_ROOM);
+    expect(website.body).toContain("Open issues in Website:");
+    expect(website.body).toContain("ACME-8");
+    expect(website.body).not.toContain("ACME-7");
+  });
+
+  it("lists the commands for anything else after !clip", async () => {
+    const { harness, homeserver } = await setUp();
+    await linkAlice(harness, homeserver);
+
+    homeserver.deliver(ROOM, message(ALICE, "!clip"));
+    await homeserver.read();
+
+    expect(homeserver.messagesIn(ROOM)[0].body).toContain("!clip issues");
+  });
+
+  it("does not answer people who have not linked an account", async () => {
+    const { homeserver } = await setUp();
+
+    homeserver.deliver(ROOM, message(MALLORY, "!clip issues"));
+    await homeserver.read();
+
+    expect(homeserver.messagesIn(ROOM)).toHaveLength(0);
   });
 });

@@ -1,6 +1,7 @@
 import { definePlugin, runWorker, type PluginContext, type PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { connect, errorMessage, joinRoom, NOT_CONFIGURED, request } from "./matrix.js";
 import { linkedMatrixUser, startLink, unlinkUser } from "./links.js";
+import { projectRoomChoices, setProjectRoom } from "./project-rooms.js";
 import { registerNotifications } from "./notifications.js";
 import { startSync, stopAllSyncs, syncStatus, type SyncStatus } from "./sync.js";
 
@@ -10,16 +11,13 @@ export type ConnectionStatus =
 
 // The bot can only post in rooms it has joined. Joining a room it is already in does nothing, and a
 // room the bot was not invited to fails, which the log reports without failing the settings save.
-async function joinConfiguredRooms(ctx: PluginContext, companyId: string) {
+// Project rooms need no join: they are picked from the rooms the bot is already in.
+async function joinDefaultRoom(ctx: PluginContext, companyId: string) {
   const matrix = await connect(ctx, companyId);
-  if (!matrix) return;
-  const rooms = new Set([matrix.defaultRoom, ...matrix.projectRooms.map((entry) => entry.room)]);
-  for (const room of rooms) {
-    if (!room) continue;
-    await joinRoom(ctx, matrix, room).catch((error) => {
-      ctx.logger.warn("Could not join a Matrix room", { companyId, room, error: errorMessage(error) });
-    });
-  }
+  if (!matrix?.defaultRoom) return;
+  await joinRoom(ctx, matrix, matrix.defaultRoom).catch((error) => {
+    ctx.logger.warn("Could not join a Matrix room", { companyId, room: matrix.defaultRoom, error: errorMessage(error) });
+  });
 }
 
 async function checkConnection(ctx: PluginContext, companyId: string): Promise<ConnectionStatus> {
@@ -33,11 +31,11 @@ async function checkConnection(ctx: PluginContext, companyId: string): Promise<C
   }
 }
 
-// Linking acts for the Paperclip user who is signed in, as Paperclip reports them to the action.
-// Agents and the system have no Matrix account to link.
+// Linking and picking a project's room act for the Paperclip user who is signed in, as Paperclip
+// reports them to the action. Agents and the system have no Matrix account to link.
 function signedInUser(context: PluginPerformActionContext): { userId: string; companyId: string } {
   const { userId, companyId } = context.actor;
-  if (context.actor.type !== "user" || !userId || !companyId) throw new Error("Only a signed-in Paperclip user can link a Matrix account.");
+  if (context.actor.type !== "user" || !userId || !companyId) throw new Error("Only a signed-in Paperclip user can do this.");
   return { userId, companyId };
 }
 
@@ -69,6 +67,11 @@ const plugin = definePlugin({
 
   async setup(ctx) {
     ctx.data.register("connection", async (params) => checkConnection(ctx, String(params.companyId ?? "")));
+    ctx.data.register("projectRoom", async (params) => projectRoomChoices(ctx, String(params.companyId ?? ""), String(params.projectId ?? "")));
+    ctx.actions.register("setProjectRoom", async (params, context) => {
+      const { companyId } = signedInUser(context);
+      await setProjectRoom(ctx, companyId, String(params.projectId ?? ""), typeof params.roomId === "string" && params.roomId ? params.roomId : null);
+    });
     registerNotifications(ctx);
     registerLinkActions(ctx);
     pluginContext = ctx;
@@ -79,7 +82,7 @@ const plugin = definePlugin({
   // restarting the worker on every settings save.
   async onConfigChanged(_config, context) {
     if (!context?.companyId) return;
-    await joinConfiguredRooms(requireContext(), context.companyId);
+    await joinDefaultRoom(requireContext(), context.companyId);
     startSync(requireContext(), context.companyId);
   },
 

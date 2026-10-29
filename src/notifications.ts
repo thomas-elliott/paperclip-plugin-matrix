@@ -1,7 +1,7 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { approvalCreated, approvalDecided, updateInteractionMessages } from "./decisions.js";
 import { connect, errorMessage, sendNotice, type Matrix } from "./matrix.js";
-import { agentName, escapeHtml, issueLabel, issueThread, notice, pageUrl, postAboutIssue, roomFor, transactionId, type Notice } from "./messages.js";
+import { agentName, escapeHtml, issueLabel, issueThread, markdownToHtml, notice, pageUrl, postAboutIssue, roomFor, transactionId, type Notice } from "./messages.js";
 import { MESSAGE_ORIGIN } from "./threads.js";
 
 // Long run errors, such as stack traces, would bury the room; the full error is in Paperclip.
@@ -14,7 +14,7 @@ function dollars(cents: number): string {
 }
 
 async function post(ctx: PluginContext, matrix: Matrix, event: PluginEvent, projectId: string | null, message: Notice) {
-  const room = await roomFor(ctx, matrix, event.companyId, projectId);
+  const room = await roomFor(ctx, matrix, projectId);
   if (room) await sendNotice(ctx, matrix, room, transactionId(event), message);
 }
 
@@ -86,7 +86,7 @@ async function commentCreated(ctx: PluginContext, matrix: Matrix, event: PluginE
   const link = cut ? await pageUrl(ctx, matrix, event.companyId, `issues/${identifier ?? event.entityId}`) : null;
 
   const text = `${agent}:\n${body}${link ? `\n\nThe rest is in Paperclip: ${link}` : ""}`;
-  const html = `<strong>${escapeHtml(agent)}:</strong><br>${escapeHtml(body).replaceAll("\n", "<br>")}${link ? `<br><br><a href="${escapeHtml(link)}">Read the rest in Paperclip</a>` : ""}`;
+  const html = `<strong>${escapeHtml(agent)}:</strong>${markdownToHtml(body)}${link ? `<p><a href="${escapeHtml(link)}">Read the rest in Paperclip</a></p>` : ""}`;
   await sendNotice(ctx, matrix, thread.roomId, transactionId(event), { text, html }, thread.eventId);
 }
 

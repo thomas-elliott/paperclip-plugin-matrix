@@ -39,6 +39,7 @@
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.8",
     "esbuild": "^0.27.3",
+    "marked": "^18.1.2",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
   },

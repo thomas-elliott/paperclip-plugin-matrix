@@ -1,5 +1,14 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import { KeyValueList, Spinner, StatusBadge, usePluginAction, usePluginData, type PluginWidgetProps } from "@paperclipai/plugin-sdk/ui";
+import {
+  KeyValueList,
+  Spinner,
+  StatusBadge,
+  usePluginAction,
+  usePluginData,
+  type PluginDetailTabProps,
+  type PluginWidgetProps,
+} from "@paperclipai/plugin-sdk/ui";
+import type { ProjectRoomChoices } from "../project-rooms.js";
 import type { ConnectionStatus } from "../worker.js";
 
 // Paperclip's theme is Tailwind v4 CSS variables on the host page. Plugins read the variables
@@ -156,6 +165,50 @@ export function DashboardWidget({ context }: PluginWidgetProps) {
         ]}
       />
       {context.companyId && <MatrixAccount companyId={context.companyId} />}
+    </div>
+  );
+}
+
+// Picks the room where posts about this project go. Only rooms the bot is in are offered, because it
+// can only post in those.
+export function ProjectRoomTab({ context }: PluginDetailTabProps) {
+  const projectId = context.entityId;
+  const { data, loading, error, refresh } = usePluginData<ProjectRoomChoices>("projectRoom", { companyId: context.companyId, projectId });
+  const setProjectRoom = usePluginAction("setProjectRoom");
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  if (loading) return <Spinner size="sm" label="Loading Matrix rooms" />;
+  if (error) return <StatusBadge status="error" label={`Could not load Matrix rooms: ${error.message}`} />;
+  if (!data?.connected) return <StatusBadge status="error" label={data?.reason ?? "Not connected"} />;
+
+  async function choose(roomId: string) {
+    setSaveError(null);
+    try {
+      await setProjectRoom({ companyId: context.companyId, projectId, roomId });
+      refresh();
+    } catch (caught) {
+      setSaveError(errorText(caught));
+    }
+  }
+
+  return (
+    <div style={styles.stack}>
+      <label htmlFor="matrix-project-room" style={styles.heading}>
+        Matrix room for this project
+      </label>
+      <p style={styles.muted}>
+        News about this project's issues goes here, and people can ask for work by mentioning the bot here. To offer
+        another room, invite the bot to it first.
+      </p>
+      <select id="matrix-project-room" style={styles.input} value={data.selected ?? ""} onChange={(event) => void choose(event.target.value)}>
+        <option value="">The default room</option>
+        {data.rooms.map((room) => (
+          <option key={room.roomId} value={room.roomId}>
+            {room.name}
+          </option>
+        ))}
+      </select>
+      {saveError && <p style={{ ...styles.muted, color: "var(--destructive)" }}>{saveError}</p>}
     </div>
   );
 }

@@ -15,7 +15,6 @@ const config = {
   accessToken: "token-ref",
   paperclipUrl: "https://paperclip.example.com/",
   defaultRoom: DEFAULT_ROOM,
-  projectRooms: [{ project: "Backend", room: PROJECT_ROOM }],
 };
 
 // The harness's entity types are the full server shapes; tests fill in only the fields the plugin reads.
@@ -46,6 +45,12 @@ async function setUp(pluginConfig: Record<string, unknown> = config) {
   const harness = createTestHarness({ manifest, config: pluginConfig });
   harness.seed({ companies: [company], projects, agents });
   await plugin.definition.setup(harness.ctx);
+  // Picked in the Backend project's Matrix tab.
+  await harness.performAction(
+    "setProjectRoom",
+    { projectId: "proj-backend", roomId: PROJECT_ROOM },
+    { companyId: COMPANY, actor: { type: "user", userId: "user-alice", companyId: COMPANY } },
+  );
   return { harness, homeserver };
 }
 
@@ -192,11 +197,30 @@ describe("rooms", () => {
     expect(homeserver.sent).toHaveLength(0);
   });
 
-  it("joins every configured room when the settings are saved", async () => {
+  it("joins the default room when the settings are saved", async () => {
     const { homeserver } = await setUp();
 
     await plugin.definition.onConfigChanged?.(config, { companyId: COMPANY });
 
-    expect(homeserver.joined.sort()).toEqual([PROJECT_ROOM, DEFAULT_ROOM].sort());
+    expect(homeserver.joined).toEqual([DEFAULT_ROOM]);
+  });
+
+  it("offers the rooms the bot is in, by name, in a project's Matrix tab", async () => {
+    const { harness, homeserver } = await setUp();
+    homeserver.joined.push(DEFAULT_ROOM, PROJECT_ROOM, "!unnamed");
+    homeserver.roomNames.set(DEFAULT_ROOM, "General");
+    homeserver.roomNames.set(PROJECT_ROOM, "Backend team");
+
+    const choices = await harness.getData("projectRoom", { companyId: COMPANY, projectId: "proj-backend" });
+
+    expect(choices).toEqual({
+      connected: true,
+      rooms: [
+        { roomId: "!unnamed", name: "!unnamed" },
+        { roomId: PROJECT_ROOM, name: "Backend team" },
+        { roomId: DEFAULT_ROOM, name: "General" },
+      ],
+      selected: PROJECT_ROOM,
+    });
   });
 });

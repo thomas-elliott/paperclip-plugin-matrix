@@ -63,7 +63,7 @@ Other things learned:
   - homeserver address
   - bot access token, as a secret (the bot's user ID comes from `/account/whoami`)
   - default room
-  - optional room per project
+  - optional room per project, picked in the project's Matrix tab (milestone 4)
 - A dashboard widget that shows whether the plugin can reach the homeserver, and as which user.
 - Posts to the project's room, or the default room:
   - issue created (`issue.created`)
@@ -128,10 +128,23 @@ Other things learned:
 - Issues carry `originKind` `plugin:paperclip-plugin-matrix:message` and the Matrix event ID as
   `originId`, so a message read twice does not create a second issue.
 
+## Milestone 4: smaller improvements
+
+- Project rooms: a Matrix tab on each project picks its room from the rooms the bot is in, by
+  name. The choice is stored against the project's ID, so renaming a project keeps its room. This
+  replaced the "Project rooms" settings table, which matched projects by name.
+- Agents' comments are rendered from Markdown to HTML with `marked`, bundled into the worker. HTML
+  inside a comment is shown as text, because Matrix clients silently drop tags they do not allow.
+- Commands, answered only for linked people: `!clip status` (open issues by status, agents
+  working or paused, approvals waiting) and `!clip issues` (open issues; in a project's room, only
+  that project's). Anything else after `!clip` lists the commands.
+- Every agent comment still goes to the issue's thread, in full. Housekeeping runs, such as
+  `issue_disposition_repair`, cannot be told apart: plugins cannot read a run's wake reason, and
+  those runs sometimes post a useful closing comment.
+
 ## Later
 
-4. Commands: `!clip status`, `issues`, `agents`, `approve`, `new`, or the same after mentioning
-   the bot.
+4. More commands: `agents`, `approve`, `new`.
 5. Showing an agent's progress by editing one message in place.
 6. Daily digest, agent tools (`send_matrix_message`, `escalate_to_human`) with a skill, and
    attachments.

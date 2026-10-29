@@ -18,6 +18,8 @@ export class FakeHomeserver {
   joined: string[] = [];
   // Room aliases the directory knows, alias to room ID.
   aliases = new Map<string, string>();
+  // Room names (m.room.name state), room ID to name.
+  roomNames = new Map<string, string>();
   // Events other users send, handed to the plugin by its next /sync.
   private pending: { roomId: string; event: RoomEvent }[] = [];
   // Invites to the bot, handed to the plugin by its next /sync.
@@ -72,6 +74,11 @@ export class FakeHomeserver {
 
     if (method === "GET" && path === "/account/whoami") return Response.json({ user_id: BOT_USER });
     if (method === "GET" && segments[0] === "profile" && segments[1] === BOT_USER) return Response.json({ displayname: BOT_NAME });
+    if (method === "GET" && path === "/joined_rooms") return Response.json({ joined_rooms: [...new Set(this.joined)] });
+    if (method === "GET" && segments[0] === "rooms" && segments[2] === "state" && segments[3] === "m.room.name") {
+      const name = this.roomNames.get(segments[1]);
+      return name ? Response.json({ name }) : notFound("Event not found");
+    }
     if (method === "GET" && path === "/sync") return this.sync(new URL(url).searchParams.get("since"));
 
     if (method === "GET" && segments[0] === "directory" && segments[1] === "room") {

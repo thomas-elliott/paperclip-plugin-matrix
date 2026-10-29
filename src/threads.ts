@@ -1,8 +1,10 @@
 import type { Agent, PluginContext, Project } from "@paperclipai/plugin-sdk";
+import { COMMAND, handleCommand } from "./commands.js";
 import { completeLink, LINK_COMMAND, linkedUser } from "./links.js";
 import manifest from "./manifest.js";
-import { joinRoom, roomIdOf, sendNotice, sendReaction, type Bot, type Matrix } from "./matrix.js";
+import { joinRoom, sendNotice, sendReaction, type Bot, type Matrix } from "./matrix.js";
 import { issueLabel, issueOfThread, notice, pageUrl, rememberIssueThread } from "./messages.js";
+import { projectOfRoom } from "./project-rooms.js";
 
 // Each issue has one Matrix thread. Its root is the first message the plugin posts about the issue,
 // or, for an issue someone asked for from Matrix, the message that asked.
@@ -31,8 +33,8 @@ export type InviteEvent = { type: string; sender: string; state_key?: string; co
 const directRoomKey = (companyId: string, roomId: string) =>
   ({ scopeKind: "company", scopeId: companyId, namespace: "direct-rooms", stateKey: roomId }) as const;
 
-// Handles one message someone sent in a room the bot is in: a link code, a reply in an issue thread,
-// or a request for work. Only linked people's replies and requests count; everything else is ignored.
+// Handles one message someone sent in a room the bot is in: a link code, a command, a reply in an
+// issue thread, or a request for work. Only linked people's replies and requests count; everything else is ignored.
 export async function handleRoomEvent(ctx: PluginContext, matrix: Matrix, bot: Bot, companyId: string, roomId: string, event: RoomEvent) {
   // Only typed text; the bot's own messages are notices, so this also skips them.
   if (event.type !== "m.room.message" || event.content.msgtype !== "m.text" || !event.content.body) return;
@@ -41,6 +43,12 @@ export async function handleRoomEvent(ctx: PluginContext, matrix: Matrix, bot: B
   const linkCode = LINK_COMMAND.exec(body)?.[1];
   if (linkCode) {
     if (await completeLink(ctx, companyId, event.sender, linkCode)) await sendReaction(ctx, matrix, roomId, event.event_id, "✅");
+    return;
+  }
+
+  const command = COMMAND.exec(body);
+  if (command) {
+    await handleCommand(ctx, matrix, companyId, roomId, event, (command[1] ?? "").trim().toLowerCase());
     return;
   }
 
@@ -103,18 +111,6 @@ function mentionsAgent(text: string, urlKey: string): boolean {
   return new RegExp(`(?<![\\w-])@${escaped}(?![\\w-]|:\\S)`, "i").test(text);
 }
 
-// The project whose room this is, if the settings give the room to one. A room the bot cannot look
-// up is skipped, so one wrong alias in the settings does not stop requests in every room.
-async function projectOfRoom(ctx: PluginContext, matrix: Matrix, companyId: string, roomId: string): Promise<Project | null> {
-  for (const entry of matrix.projectRooms) {
-    if ((await roomIdOf(ctx, matrix, entry.room).catch(() => null)) !== roomId) continue;
-    const wanted = entry.project.toLowerCase();
-    const projects = await ctx.projects.list({ companyId });
-    return projects.find((project) => project.id.toLowerCase() === wanted || project.name.toLowerCase() === wanted) ?? null;
-  }
-  return null;
-}
-
 // An agent the request mentions, otherwise the project's lead agent, otherwise the default agent.
 async function chooseAgent(ctx: PluginContext, matrix: Matrix, companyId: string, project: Project | null, request: string): Promise<Agent | null> {
   const agents = (await ctx.agents.list({ companyId })).filter((agent) => agent.status !== "terminated");
@@ -136,7 +132,7 @@ async function startWork(ctx: PluginContext, matrix: Matrix, bot: Bot, companyId
   const [existing] = await ctx.issues.list({ companyId, originKind: MESSAGE_ORIGIN, originId: event.event_id });
   if (existing) return;
 
-  const project = await projectOfRoom(ctx, matrix, companyId, roomId);
+  const project = await projectOfRoom(ctx, companyId, roomId);
   const agent = await chooseAgent(ctx, matrix, companyId, project, request);
   if (!agent) {
     const reason = "No agent to give this to. Mention one as @url-key, or set a default agent in the plugin settings.";

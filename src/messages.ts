@@ -1,5 +1,7 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
+import { Marked } from "marked";
 import { sendNotice, type Matrix, type SentEvent } from "./matrix.js";
+import { projectRoom } from "./project-rooms.js";
 
 // What the plugin's messages say and where they go, shared by plain notifications and decisions.
 
@@ -28,10 +30,26 @@ export function escapeHtml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// Agents write Markdown. HTML inside it is shown as text: Matrix clients silently drop tags they do
+// not allow, which would hide parts of a comment.
+const markdown = new Marked({ renderer: { html: ({ text }) => escapeHtml(text) } });
+
+export function markdownToHtml(text: string): string {
+  return markdown.parse(text, { async: false });
+}
+
 export function notice(summary: string, link: string | null): Notice {
   return {
     text: link ? `${summary}\n${link}` : summary,
     html: link ? `${escapeHtml(summary)} <a href="${escapeHtml(link)}">Open in Paperclip</a>` : escapeHtml(summary),
+  };
+}
+
+export function multiLineNotice(lines: string[], link: string | null): Notice {
+  const text = lines.join("\n");
+  return {
+    text: link ? `${text}\n${link}` : text,
+    html: `${escapeHtml(text).replaceAll("\n", "<br>")}${link ? `<br><a href="${escapeHtml(link)}">Open in Paperclip</a>` : ""}`,
   };
 }
 
@@ -51,15 +69,9 @@ export async function agentName(ctx: PluginContext, agentId: string | null | und
   return (await ctx.agents.get(agentId, companyId))?.name ?? null;
 }
 
-// A project's own room if the settings give it one, matched by project name or ID, otherwise the default room.
-export async function roomFor(ctx: PluginContext, matrix: Matrix, companyId: string, projectId: string | null): Promise<string | null> {
-  if (projectId && matrix.projectRooms.length > 0) {
-    const project = await ctx.projects.get(projectId, companyId);
-    const names = [projectId.toLowerCase(), project?.name.toLowerCase()];
-    const match = matrix.projectRooms.find((entry) => names.includes(entry.project.toLowerCase()));
-    if (match) return match.room;
-  }
-  return matrix.defaultRoom;
+// The project's own room if it has one, otherwise the default room.
+export async function roomFor(ctx: PluginContext, matrix: Matrix, projectId: string | null): Promise<string | null> {
+  return (projectId ? await projectRoom(ctx, projectId) : null) ?? matrix.defaultRoom;
 }
 
 // Using the event ID as the transaction ID means a redelivered event is not posted twice.
@@ -78,7 +90,7 @@ export async function postAboutIssue(
 ): Promise<SentEvent | null> {
   const thread = await issueThread(ctx, issue.id);
   if (thread) return sendNotice(ctx, matrix, thread.roomId, txnId, message, thread.eventId);
-  const room = await roomFor(ctx, matrix, companyId, issue.projectId);
+  const room = await roomFor(ctx, matrix, issue.projectId);
   if (!room) return null;
   const root = await sendNotice(ctx, matrix, room, txnId, message);
   await rememberIssueThread(ctx, companyId, issue.id, root);

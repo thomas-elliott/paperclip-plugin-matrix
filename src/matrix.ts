@@ -2,8 +2,6 @@ import type { EnvSecretRefBinding, PluginContext } from "@paperclipai/plugin-sdk
 
 export const NOT_CONFIGURED = "Set the homeserver address and access token in the plugin settings.";
 
-export type ProjectRoom = { project: string; room: string };
-
 export type Matrix = {
   homeserverUrl: string;
   token: string;
@@ -11,7 +9,6 @@ export type Matrix = {
   paperclipUrl: string | null;
   // A room ID (!abc) or alias (#name:server), as typed in the settings.
   defaultRoom: string | null;
-  projectRooms: ProjectRoom[];
   // The agent that gets work asked for outside a project's room, by URL key or name. Null when not set.
   defaultAgent: string | null;
 };
@@ -31,17 +28,11 @@ export async function connect(ctx: PluginContext, companyId: string): Promise<Ma
 
   // Resolve the token on every call: Paperclip forbids caching secret values.
   const token = await ctx.secrets.resolve(config.accessToken as EnvSecretRefBinding, { companyId, configPath: "accessToken" });
-  const projectRooms = Array.isArray(config.projectRooms) ? (config.projectRooms as Partial<ProjectRoom>[]) : [];
   return {
     homeserverUrl,
     token,
     paperclipUrl: trimmed(config.paperclipUrl)?.replace(/\/+$/, "") ?? null,
     defaultRoom: trimmed(config.defaultRoom),
-    projectRooms: projectRooms.flatMap((entry) => {
-      const project = trimmed(entry.project);
-      const room = trimmed(entry.room);
-      return project && room ? [{ project, room }] : [];
-    }),
     defaultAgent: trimmed(config.defaultAgent),
   };
 }
@@ -66,7 +57,7 @@ export async function request<T>(ctx: PluginContext, matrix: Matrix, path: strin
 }
 
 // Messages are sent to room IDs; an alias is looked up in the room directory first.
-export async function roomIdOf(ctx: PluginContext, matrix: Matrix, room: string): Promise<string> {
+async function roomIdOf(ctx: PluginContext, matrix: Matrix, room: string): Promise<string> {
   if (!room.startsWith("#")) return room;
   const { room_id } = await request<{ room_id: string }>(ctx, matrix, `/directory/room/${encodeURIComponent(room)}`);
   return room_id;
